@@ -1,20 +1,22 @@
 /* =============================================================================
-   RevOps Firefighter — v5
+   RevOps Firefighter — v7
    =============================================================================
    v1 was logic-only rectangles. v2 added textures/menu/HUD/scoring. v3 added
    sprites/video/pause-menu (v3.1 map select, v4 balance + the Shantanu boss
-   event, v4.1/v4.2 cleanup + a GIF menu background). v5 adds:
-     - walking_sprite_v2.png (fixes the player's walk-cycle "jump" bug) and a
-       dedicated burned_server_rack.png (replacing the old grayscale filter)
-     - gameplay music + a one-shot Shantanu alarm, both gated by a now-real
-       mute button
-     - the player (and Shantanu, matched to the same size) rendered twice as
-       big on screen
-     - the stats panel moved off the game canvas onto its own side panel, a
-       new static controls/how-to-play panel under the canvas
+   event, v4.1/v4.2 cleanup + a GIF menu background, v5 sprite/audio/HUD
+   polish, v6/v6 graphics+sound follow-ups). v7 adds:
+     - progressive difficulty: a score-driven LEVELS table replaces the flat
+       ignition-interval / burn-down-timer / player-speed constants and the
+       old hardcoded Shantanu score threshold
+     - a brief "LEVEL N REACHED" banner on every level-up
+     - the survive-time win condition is gone — this is endless-survival now,
+       the only end state is the original LOSE — replaced with a count-up
+       play-time stopwatch
+     - a new game-over final score (extinguished × seconds played) that
+       drives the session leaderboard, plus the game-over flavor line
 
    Architecture is unchanged:
-     - DATA LAYER      : CONFIG + the `game` state object.
+     - DATA LAYER      : CONFIG + LEVELS + the `game` state object.
      - LOGIC LAYER     : update() and its helpers.
      - CLIENT/UI LAYER : draw() + the DOM menu/pause overlays in
                          index.html/style.css, plus two more small HUD
@@ -22,8 +24,8 @@
                          one.
 
    Each version's additions are labelled "v2:" / "v3:" / "v3.1:" / "v4:" /
-   "v5:" in comments so the diff against the previous version is easy to
-   follow.
+   "v5:" / "v7:" in comments so the diff against the previous version is easy
+   to follow.
 ============================================================================= */
 
 
@@ -49,27 +51,20 @@ const CONFIG = {
   // hitbox-to-sprite-width ratio (0.6) the smaller sprite had — movement
   // speed and the collision code itself are unchanged, only these sizes.
   PLAYER_SIZE: 48,        // was 24
+  // v7: base speed before LEVELS[].speedMultiplier is applied (see LEVELS,
+  // just below CONFIG).
   PLAYER_SPEED: 190,      // pixels per second
 
   // --- Fire timing ----------------------------------------------------------
-  IGNITE_INTERVAL_START: 6.0,  // seconds between ignitions at t=0
-  IGNITE_INTERVAL_MIN: 1.2,    // fastest the ignition timer ever gets
-  IGNITE_RAMP_PER_SEC: 0.06,   // interval shrinks by this many seconds, per
-                               // second of elapsed time (escalating pressure)
+  // v7: fireInterval/burnTime are no longer flat constants or a time-based
+  // ramp — they now come from the active entry in LEVELS (below), driven by
+  // score. Only the grace period before the very first fire stays fixed.
   IGNITE_FIRST_DELAY: 2.0,     // grace period before the very first fire
-
-  // v4: was 8.0s — doubled so there's a fairer window to reach a fire
-  // before it's lost for good.
-  BURN_DOWN_TIME: 16.0,        // a fire left this long destroys the server
 
   // --- Extinguishing --------------------------------------------------------
   EXTINGUISH_TIME: 2.0,   // seconds of holding SPACE to put a fire out
   EXTINGUISH_RANGE: 14,   // how many pixels away from the server's edge still
                           // counts as "next to it" (0 would mean touching)
-
-  // --- Win condition --------------------------------------------------------
-  SURVIVE_TIME: 90,       // survive this long, with no active fire and fewer
-                          // than MAX_BURNED_ALLOWED servers lost, and you win
 
   // --- v2: desks (solid obstacles) -------------------------------------------
   // Footprint is DESK_COLS x DESK_ROWS tiles, matching the ~128x80
@@ -114,8 +109,10 @@ const CONFIG = {
   WALK_ANIM_FPS: 8,
   PLAYER_SPRITE_W: 80,       // v5: doubled from 40 — drawn width of the character
 
-  // --- v4: Shantanu boss event --------------------------------------------------
-  SHANTANU_SCORE_THRESHOLD: 10,  // score needed to arm the repeating timer
+  // --- v4/v7: Shantanu boss event -----------------------------------------------
+  // v7: the score threshold that used to arm this is gone — whether he's
+  // active at all is now just LEVELS[].shantanuEnabled. His own cadence once
+  // armed is unchanged.
   SHANTANU_INTERVAL: 30,         // seconds (game-time; frozen while paused)
   SHANTANU_WALK_SPEED: 150,      // pixels per second
   SHANTANU_ENTRY_DEPTH_TILES: 3, // how far in from the wall he stops to talk
@@ -141,6 +138,35 @@ const CONFIG = {
   ],
 };
 
+/* -----------------------------------------------------------------------------
+   v7: PROGRESSIVE DIFFICULTY. Score-driven level table, replacing the old
+   flat ignition-interval / burn-down-timer / player-speed constants and the
+   old hardcoded "Shantanu unlocks at score >= 10" check. Everything
+   downstream (updateIgnition, updateFires, updatePlayer, updateShantanuTimer)
+   just reads getCurrentLevel(game.score) — retune by editing this table.
+----------------------------------------------------------------------------- */
+const LEVELS = [
+  { level: 1, minScore: 0,  fireInterval: 12, burnTime: 14, speedMultiplier: 1.00, shantanuEnabled: false },
+  { level: 2, minScore: 10, fireInterval: 12, burnTime: 14, speedMultiplier: 1.00, shantanuEnabled: true  },
+  { level: 3, minScore: 20, fireInterval: 10, burnTime: 12, speedMultiplier: 1.25, shantanuEnabled: true  },
+  { level: 4, minScore: 30, fireInterval: 8,  burnTime: 10, speedMultiplier: 1.50, shantanuEnabled: true  },
+  { level: 5, minScore: 40, fireInterval: 6,  burnTime: 8,  speedMultiplier: 1.75, shantanuEnabled: true  },
+];
+
+// Current level = the highest entry whose minScore is <= score. LEVELS is
+// ordered ascending by minScore, so the last match wins.
+function getCurrentLevel(score) {
+  let current = LEVELS[0];
+  for (const lvl of LEVELS) {
+    if (score >= lvl.minScore) current = lvl;
+  }
+  return current;
+}
+
+// v7: level-up banner timing (see updateLevelBanner()/drawLevelBanner()).
+const LEVEL_BANNER_DURATION = 2.0; // total seconds on screen
+const LEVEL_BANNER_FADE = 0.5;     // of which this many seconds, at the end, fade out
+
 // Server lifecycle states. OK -> BURNING -> BURNED_DOWN (permanent),
 // or BURNING -> OK when the player extinguishes it in time.
 const STATE = {
@@ -150,9 +176,10 @@ const STATE = {
 };
 
 // Overall game states (menu is represented separately — see `game === null`).
+// v7: no more WON — this is endless-survival now, the only way a run ends is
+// LOST (MAX_BURNED_ALLOWED servers burned down).
 const PHASE = {
   PLAYING: 'PLAYING',
-  WON: 'WON',
   LOST: 'LOST',
 };
 
@@ -737,13 +764,15 @@ document.getElementById('btnQuitToMenu').addEventListener('click', () => {
 ----------------------------------------------------------------------------- */
 let sessionLeaderboard = [];
 
+// v7: the leaderboard now ranks by finalScore = extinguishedCount * secondsPlayed
+// (computed on game over), not the raw in-run +1-per-extinguish score.
 function recordFinalScore() {
-  sessionLeaderboard.push({
-    score: Math.floor(game.score),
-    result: game.phase,     // 'WON' or 'LOST'
-    elapsed: game.elapsed,
-  });
-  sessionLeaderboard.sort((a, b) => b.score - a.score);
+  const extinguishedCount = Math.floor(game.score);
+  const secondsPlayed = Math.floor(game.elapsed);
+  const finalScore = extinguishedCount * secondsPlayed;
+
+  sessionLeaderboard.push({ finalScore, extinguishedCount, secondsPlayed });
+  sessionLeaderboard.sort((a, b) => b.finalScore - a.finalScore);
   sessionLeaderboard.length = Math.min(sessionLeaderboard.length, CONFIG.LEADERBOARD_SIZE);
 }
 
@@ -784,6 +813,13 @@ function startGame() {
 
     // v2: running score for this session's game.
     score: 0,
+
+    // v7: current difficulty level (index into LEVELS by `.level`, not
+    // array index) + the level-up banner overlay. Starts at 1 with no
+    // banner — the banner only fires on an actual increase (see
+    // updateLevelProgress()).
+    level: 1,
+    levelBanner: null, // { text, timer } while a banner is showing, else null
 
     // v4: Shantanu boss event — see updateShantanuTimer()/updateShantanuActor().
     shantanuUnlocked: false,
@@ -868,7 +904,20 @@ function makeServer(id, col, row) {
     y: tileCenter(row),
     state: STATE.OK,
     burnTimer: 0,
+    // v7: set for real when the server actually ignites (see igniteServer())
+    // — a server that's never caught fire doesn't need one yet.
+    burnTime: 0,
   };
+}
+
+// v7: the one place a server transitions OK -> BURNING, whether from normal
+// random ignition or Shantanu's IGNITING state. Locks in the *current*
+// level's burnTime for this fire specifically — per the brief, a later level
+// change must not retroactively shorten a fire that's already burning.
+function igniteServer(server) {
+  server.state = STATE.BURNING;
+  server.burnTimer = 0;
+  server.burnTime = getCurrentLevel(game.score).burnTime;
 }
 
 // Flood fill the walkable floor from the player's spawn (servers, desks and
@@ -923,9 +972,39 @@ function update(dt) {
   updateIgnition(dt);
   updateFires(dt);
   updateExtinguishing(dt);
+  updateLevelProgress();    // v7: after score can change, before it's used below
+  updateLevelBanner(dt);    // v7
   updateShantanuTimer(dt);   // v4
   updateShantanuActor(dt);   // v4
   checkEndConditions();
+}
+
+// --- v7: progressive difficulty ----------------------------------------------
+// Recomputes the active level from the current score every frame. On an
+// actual increase, caps the in-flight ignition timer down to the new
+// fireInterval (so a faster level applies right away instead of waiting out
+// whatever was left of the old, slower countdown) and queues a one-shot
+// level-up banner. Already-burning fires are untouched here — they keep the
+// burnTime baked in by igniteServer() at the moment they ignited.
+function updateLevelProgress() {
+  const newLevel = getCurrentLevel(game.score);
+  if (newLevel.level === game.level) return;
+
+  game.level = newLevel.level;
+  if (game.igniteTimer > newLevel.fireInterval) {
+    game.igniteTimer = newLevel.fireInterval;
+  }
+
+  // Never banner the starting level — only real level-ups (2 and up).
+  if (newLevel.level > 1) {
+    game.levelBanner = { text: `LEVEL ${newLevel.level} REACHED`, timer: LEVEL_BANNER_DURATION };
+  }
+}
+
+function updateLevelBanner(dt) {
+  if (!game.levelBanner) return;
+  game.levelBanner.timer -= dt;
+  if (game.levelBanner.timer <= 0) game.levelBanner = null;
 }
 
 // --- Movement ---------------------------------------------------------------
@@ -934,7 +1013,9 @@ function update(dt) {
 // (that's a later version, per the roadmap).
 function updatePlayer(dt) {
   const p = game.player;
-  const step = CONFIG.PLAYER_SPEED * dt;
+  // v7: base speed scaled by the active level's speedMultiplier — composes
+  // with CONFIG.PLAYER_SPEED rather than replacing it.
+  const step = CONFIG.PLAYER_SPEED * getCurrentLevel(game.score).speedMultiplier * dt;
   const half = CONFIG.PLAYER_SIZE / 2;
   const minPos = CONFIG.TILE + half;
   const maxX = canvas.width - minPos;
@@ -972,12 +1053,9 @@ function collidesWithObstacles(x, y, half) {
   );
 }
 
-// --- Random ignition, escalating over time ----------------------------------
-function currentIgniteInterval() {
-  const interval = CONFIG.IGNITE_INTERVAL_START - CONFIG.IGNITE_RAMP_PER_SEC * game.elapsed;
-  return Math.max(CONFIG.IGNITE_INTERVAL_MIN, interval);
-}
-
+// --- Random ignition, driven by the active level ----------------------------
+// v7: replaces the old time-based ramp — the interval is just whatever
+// LEVELS[].fireInterval says for the current score.
 function updateIgnition(dt) {
   game.igniteTimer -= dt;
   if (game.igniteTimer > 0) return;
@@ -985,11 +1063,10 @@ function updateIgnition(dt) {
   const candidates = game.servers.filter((s) => s.state === STATE.OK);
   if (candidates.length > 0) {
     const victim = candidates[Math.floor(Math.random() * candidates.length)];
-    victim.state = STATE.BURNING;
-    victim.burnTimer = 0;
+    igniteServer(victim);
   }
 
-  game.igniteTimer = currentIgniteInterval();
+  game.igniteTimer = getCurrentLevel(game.score).fireInterval;
 }
 
 // --- Burn-down --------------------------------------------------------------
@@ -998,7 +1075,7 @@ function updateFires(dt) {
     if (s.state !== STATE.BURNING) continue;
 
     s.burnTimer += dt;
-    if (s.burnTimer >= CONFIG.BURN_DOWN_TIME) {
+    if (s.burnTimer >= s.burnTime) {
       s.state = STATE.BURNED_DOWN;
       s.burnTimer = 0;
 
@@ -1104,7 +1181,9 @@ function pickShantanuSpawn() {
 // SHANTANU_INTERVAL seconds for the rest of the run (no re-crossing needed).
 function updateShantanuTimer(dt) {
   if (!game.shantanuUnlocked) {
-    if (game.score >= CONFIG.SHANTANU_SCORE_THRESHOLD) {
+    // v7: gated by the active level's shantanuEnabled flag instead of a
+    // hardcoded score threshold.
+    if (getCurrentLevel(game.score).shantanuEnabled) {
       game.shantanuUnlocked = true;
       game.shantanuTimer = CONFIG.SHANTANU_INTERVAL; // first event is 30s from here
     }
@@ -1224,10 +1303,7 @@ function updateShantanuActor(dt) {
       // ignition), then head for the exit. From here it's an ordinary fire —
       // same animation, burn-down timer and extinguishing rules as any other.
       const target = game.servers.find((sv) => sv.id === s.targetServerId);
-      if (target) {
-        target.state = STATE.BURNING;
-        target.burnTimer = 0;
-      }
+      if (target) igniteServer(target); // v7: locks in the current level's burnTime
       s.state = 'LEAVING';
       s.facing = EDGE_FACING_OUT[s.edge];
       s.moving = true;
@@ -1254,20 +1330,14 @@ function updateShantanuActor(dt) {
   }
 }
 
-// --- Win / lose -------------------------------------------------------------
+// --- Lose --------------------------------------------------------------------
+// v7: no more WON — this is endless-survival now, so the only end condition
+// left is the original LOSE (MAX_BURNED_ALLOWED servers burned down).
 function checkEndConditions() {
   const burnedDown = countByState(STATE.BURNED_DOWN);
-  const burning = countByState(STATE.BURNING);
 
   if (burnedDown >= CONFIG.MAX_BURNED_ALLOWED) {
     game.phase = PHASE.LOST;
-    recordFinalScore(); // v2
-    pauseGameplayMusic(); // v5
-    return;
-  }
-
-  if (game.elapsed >= CONFIG.SURVIVE_TIME && burning === 0) {
-    game.phase = PHASE.WON;
     recordFinalScore(); // v2
     pauseGameplayMusic(); // v5
   }
@@ -1304,6 +1374,8 @@ function draw() {
   drawExtinguishBar();
   drawBurnScoreboard();   // v2: separate "X/3 SERVERS LOST" danger meter — stays
                           // on the main canvas as an in-the-moment overlay
+  drawLevelBanner();      // v7: non-blocking overlay, drawn on top of everything
+                          // else above but before the end screen dims the canvas
   if (game.phase !== PHASE.PLAYING) drawEndScreen();
 }
 
@@ -1409,7 +1481,7 @@ function drawServers() {
     }
 
     if (s.state === STATE.BURNING) {
-      const left = (CONFIG.BURN_DOWN_TIME - s.burnTimer).toFixed(1);
+      const left = (s.burnTime - s.burnTimer).toFixed(1);
       ctx.fillStyle = COLORS.cream;
       ctx.font = '10px monospace';
       ctx.textAlign = 'center';
@@ -1577,6 +1649,42 @@ function drawExtinguishBar() {
   ctx.fillRect(x, y, w * ratio, h);
 }
 
+// --- v7: level-up banner ------------------------------------------------------
+// Big centered overlay on the game canvas, up for LEVEL_BANNER_DURATION
+// seconds then faded out over the last LEVEL_BANNER_FADE of those — a
+// non-blocking overlay, gameplay (and Shantanu, fires, etc.) keeps rendering
+// underneath exactly as normal.
+function drawLevelBanner() {
+  const b = game.levelBanner;
+  if (!b) return;
+
+  const alpha = b.timer < LEVEL_BANNER_FADE ? Math.max(0, b.timer / LEVEL_BANNER_FADE) : 1;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  const w = 380, h = 96;
+  const x = canvas.width / 2 - w / 2;
+  const y = canvas.height / 2 - h / 2;
+
+  if (ASSETS.statPanelFrame.loaded) {
+    ctx.drawImage(ASSETS.statPanelFrame.img, x, y, w, h);
+  } else {
+    ctx.fillStyle = 'rgba(45, 52, 71, 0.95)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = COLORS.accent;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
+  }
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.accent;
+  ctx.font = `bold 22px ${HUD_FONT}`;
+  ctx.fillText(b.text, canvas.width / 2, canvas.height / 2 + 8);
+
+  ctx.restore();
+}
+
 // --- v2/v5: stats side panel --------------------------------------------------
 // v2 drew this as a small box in the corner of the game canvas; v5 moves it
 // to its own dedicated canvas beside the game (see statsCanvas, above), made
@@ -1608,7 +1716,8 @@ function drawSideStatsPanel() {
   }
 
   const lines = [
-    `TIME  ${game.elapsed.toFixed(0)}/${CONFIG.SURVIVE_TIME}`,
+    `TIME  ${formatTime(game.elapsed)}`,      // v7: count-up stopwatch, mm:ss
+    `LEVEL ${game.level}`,                    // v7
     `OK    ${countByState(STATE.OK)}`,
     `FIRE  ${countByState(STATE.BURNING)}`,
     `LOST  ${countByState(STATE.BURNED_DOWN)}`,
@@ -1626,7 +1735,7 @@ function drawSideStatsPanel() {
   statsCtx.fillStyle = COLORS.grey;
   statsCtx.font = '11px monospace';
   statsCtx.fillText(
-    `ignite every ${currentIgniteInterval().toFixed(2)}s (next in ${Math.max(0, game.igniteTimer).toFixed(1)}s)`,
+    `ignite every ${getCurrentLevel(game.score).fireInterval.toFixed(1)}s (next in ${Math.max(0, game.igniteTimer).toFixed(1)}s)`,
     w / 2,
     startY + lines.length * 24 + 6
   );
@@ -1715,47 +1824,59 @@ function drawBurnScoreboard() {
   }
 }
 
+// v7: no more WON screen — endless-survival mode only ever ends in LOSE, so
+// this only has one version now. The final score (extinguished × seconds
+// played, per the v7 brief) replaces the raw in-run score as the headline
+// number and what the leaderboard below it ranks by.
 function drawEndScreen() {
   ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  const won = game.phase === PHASE.WON;
   ctx.textAlign = 'center';
 
-  ctx.fillStyle = won ? COLORS.barFill : COLORS.accent;
+  ctx.fillStyle = COLORS.accent;
   ctx.font = 'bold 34px monospace';
-  ctx.fillText(won ? 'REVENUE STACK SAVED' : 'REVENUE STACK DOWN', canvas.width / 2, canvas.height / 2 - 90);
+  ctx.fillText('REVENUE STACK DOWN', canvas.width / 2, canvas.height / 2 - 130);
 
   ctx.fillStyle = COLORS.cream;
   ctx.font = '14px monospace';
   ctx.fillText(
-    `survived ${game.elapsed.toFixed(1)}s · ${countByState(STATE.BURNED_DOWN)} servers lost`,
+    `survived ${formatTime(game.elapsed)} · ${countByState(STATE.BURNED_DOWN)} servers lost`,
     canvas.width / 2,
-    canvas.height / 2 - 62
+    canvas.height / 2 - 104
   );
 
-  ctx.font = 'bold 18px monospace';
-  ctx.fillStyle = COLORS.accent;
-  ctx.fillText(`FINAL SCORE: ${Math.floor(game.score)}`, canvas.width / 2, canvas.height / 2 - 32);
+  const extinguishedCount = Math.floor(game.score);
+  const secondsPlayed = Math.floor(game.elapsed);
+  const finalScore = extinguishedCount * secondsPlayed;
 
-  // v2: session leaderboard, top 5.
+  // The punchline of the screen — biggest, boldest text here.
+  ctx.font = 'bold 30px monospace';
+  ctx.fillStyle = COLORS.accent;
+  ctx.fillText(`Your Score: ${finalScore}`, canvas.width / 2, canvas.height / 2 - 66);
+
+  ctx.font = 'bold 15px monospace';
+  ctx.fillStyle = COLORS.cream;
+  ctx.fillText('"You are the reasons the wizard invests into', canvas.width / 2, canvas.height / 2 - 38);
+  ctx.fillText('his number one operating priority!"', canvas.width / 2, canvas.height / 2 - 20);
+
+  // v2/v7: session leaderboard, top 5, ranked by finalScore now.
   ctx.font = '13px monospace';
   ctx.fillStyle = COLORS.cream;
-  ctx.fillText('TOP 5 THIS SESSION', canvas.width / 2, canvas.height / 2);
+  ctx.fillText('TOP 5 THIS SESSION', canvas.width / 2, canvas.height / 2 + 12);
 
   sessionLeaderboard.forEach((entry, i) => {
-    const label = entry.result === PHASE.WON ? 'WON ' : 'LOST';
     ctx.fillStyle = i === 0 ? COLORS.accent : COLORS.grey;
     ctx.fillText(
-      `${i + 1}. ${entry.score} pts  ·  ${label}  ·  ${entry.elapsed.toFixed(0)}s`,
+      `${i + 1}. ${entry.finalScore} pts  ·  ${entry.extinguishedCount} saved  ·  ${formatTime(entry.secondsPlayed)}`,
       canvas.width / 2,
-      canvas.height / 2 + 22 + i * 18
+      canvas.height / 2 + 34 + i * 18
     );
   });
 
   ctx.fillStyle = COLORS.cream;
   ctx.font = '14px monospace';
-  ctx.fillText('press R to restart', canvas.width / 2, canvas.height / 2 + 22 + sessionLeaderboard.length * 18 + 22);
+  ctx.fillText('press R to restart', canvas.width / 2, canvas.height / 2 + 34 + sessionLeaderboard.length * 18 + 22);
 }
 
 
@@ -1764,6 +1885,14 @@ function drawEndScreen() {
 ----------------------------------------------------------------------------- */
 function tileCenter(index) {
   return index * CONFIG.TILE + CONFIG.TILE / 2;
+}
+
+// v7: play-time stopwatch display, mm:ss.
+function formatTime(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m}:${sec.toString().padStart(2, '0')}`;
 }
 
 function clamp(value, min, max) {
