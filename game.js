@@ -179,7 +179,7 @@ const LEVELS = [
   { level: 2, minScore: 3, fireInterval: 7, burnTime: 14, speedMultiplier: 1.00, shantanuEnabled: true  },
   { level: 3, minScore: 7, fireInterval: 6, burnTime: 12, speedMultiplier: 1.25, shantanuEnabled: true  },
   { level: 4, minScore: 15, fireInterval: 5,  burnTime: 10, speedMultiplier: 1.50, shantanuEnabled: true  },
-  { level: 5, minScore: 20, fireInterval: 4,  burnTime: 8,  speedMultiplier: 1.75, shantanuEnabled: true  },
+  { level: 5, minScore: 20, fireInterval: 3,  burnTime: 6,  speedMultiplier: 1.60, shantanuEnabled: true  },
 ];
 
 // Current level = the highest entry whose minScore is <= score. LEVELS is
