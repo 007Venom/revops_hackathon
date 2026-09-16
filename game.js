@@ -129,7 +129,7 @@ const CONFIG = {
   // v7: the score threshold that used to arm this is gone — whether he's
   // active at all is now just LEVELS[].shantanuEnabled. His own cadence once
   // armed is unchanged.
-  SHANTANU_INTERVAL: 30,         // seconds (game-time; frozen while paused)
+  SHANTANU_INTERVAL: 15,         // seconds (game-time; frozen while paused)
   SHANTANU_WALK_SPEED: 150,      // pixels per second
   SHANTANU_ENTRY_DEPTH_TILES: 3, // how far in from the wall he stops to talk
   SHANTANU_BUBBLE_DURATION: 2.0, // seconds the speech bubble stays up
