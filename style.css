@@ -75,12 +75,28 @@ canvas {
   border: 2px solid #444444;
 }
 
+/* v3: looping background video, sits between the overlay's own background-
+   image (fallback) and the menu panel content. */
+.menu-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
+}
+
 .menu-panel {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 10px;
   padding: 24px 32px;
+  /* Readability over the video regardless of what's playing behind it. */
+  background: rgba(25, 30, 43, 0.45);
+  border-radius: 10px;
 }
 
 .menu-badge {
@@ -176,4 +192,65 @@ canvas {
   font-size: 11px;
   color: var(--color-grey);
   margin: 4px 0 0;
+}
+
+
+/* -----------------------------------------------------------------------
+   v3: Escape pause overlay — sits over the canvas mid-game. Lighter-weight
+   than the main menu (no video/background image, just a dim + a card).
+----------------------------------------------------------------------- */
+.pause-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(25, 30, 43, 0.78);
+}
+
+.pause-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 28px 36px;
+  background: var(--color-bg-mid);
+  border: 2px solid var(--color-accent);
+  border-radius: 10px;
+}
+
+.pause-title {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: 2px;
+  color: var(--color-cream);
+}
+
+.pause-buttons {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+}
+
+.pause-quit-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+}
+
+/* Playful taunt box next to Quit Game — light-hearted, not hostile: a
+   speech-bubble-ish dashed border rather than a stern warning look. */
+.pause-taunt {
+  margin: 0;
+  padding: 10px 12px;
+  border: 2px dashed var(--color-accent);
+  border-radius: 8px;
+  background: rgba(255, 106, 74, 0.08);
+  color: var(--color-cream);
+  font-size: 12px;
+  font-style: italic;
+  text-align: center;
+  line-height: 1.4;
 }

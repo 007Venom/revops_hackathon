@@ -1,19 +1,21 @@
 /* =============================================================================
-   RevOps Firefighter — v2
+   RevOps Firefighter — v3
    =============================================================================
-   v1 was logic-only rectangles. v2 adds, on top of the same logic:
-     - textured walls, floor and desk obstacles the player has to walk around
-     - a main menu (Start / Exit, with Change Map + Mute stubbed in for later)
-     - a styled stats HUD panel + a separate "servers lost" danger meter
-     - a point system and an in-memory (session-only) top-5 leaderboard
+   v1 was logic-only rectangles. v2 added textures/menu/HUD/scoring. v3 adds,
+   on top of both:
+     - real sprites: server rack (with a burned/charred filter), an animated
+       fire overlay on burning servers, and a 4-direction player walk cycle
+     - a looping background video on the main menu (muted autoplay)
+     - an Escape pause menu with Continue / Quit-to-menu + a random taunt line
 
    Architecture is unchanged:
      - DATA LAYER      : CONFIG + the `game` state object.
      - LOGIC LAYER     : update() and its helpers.
-     - CLIENT/UI LAYER : draw() + the DOM menu overlay in index.html/style.css.
+     - CLIENT/UI LAYER : draw() + the DOM menu/pause overlays in
+                         index.html/style.css.
 
-   All new v1->v2 sections are labelled "v2:" in comments so the diff against
-   v1 is easy to follow.
+   Each version's additions are labelled "v2:" / "v3:" in comments so the
+   diff against the previous version is easy to follow.
 ============================================================================= */
 
 
@@ -84,6 +86,39 @@ const CONFIG = {
 
   // --- v2: HUD sizing ---------------------------------------------------------
   HUD_PANEL_SCALE: 0.55,  // stat_panel_frame.png (288x160) drawn at this scale
+
+  // --- v3: server rack + fire sprites -----------------------------------------
+  SERVER_SPRITE_W: 40,       // drawn width; server_rack.png is 540x1116 (tall)
+  FIRE_FRAME_W: 164,         // fire_spritesheet.png: 1312x393, 8 frames
+  FIRE_FRAME_H: 393,
+  FIRE_FRAME_COUNT: 8,
+  FIRE_ANIM_FPS: 9,          // within the requested 8-10fps range
+  FIRE_DRAW_SCALE: 1.3,      // fire drawn slightly wider than the rack
+
+  // --- v3: player walk cycle ---------------------------------------------------
+  // walking_sprite.png is a 4x4 grid, ~236x283 per cell. Row -> facing
+  // direction, guessed from the sheet by eye — see the v3 chat reply for
+  // which mapping this is; flag if a direction looks wrong and we'll swap.
+  DIRECTION_ROWS: { down: 0, up: 3, left: 1, right: 2 },
+  PLAYER_FRAME_COUNT: 4,
+  WALK_ANIM_FPS: 8,
+  PLAYER_SPRITE_W: 40,       // drawn width of the character sprite
+
+  // --- v3: pause menu taunts ---------------------------------------------------
+  // Exact wording as given — do not edit these strings.
+  TAUNT_LINES: [
+    `Quitting already? We knew this fight was out of your league..`,
+    `Are you really rage-quitting, or did your mom just call you for dinner?.`,
+    `Giving up so soon? The tutorial wasn't that hard..`,
+    `We'd call you a chicken, but even chickens put up a fight..`,
+    `Go ahead, click "Exit Game". The game was getting a bit too fast for you anyway..`,
+    `Closing the game won't make you any better at it, you know..`,
+    `Running away won't fix your high score..`,
+    `Don't worry, the game will still be here when you get your courage back..`,
+    `Rage-quitting won't refund your skill issues..`,
+    `Go take a nap—clearly this was a bit too intense for you..`,
+    `We'd say "thanks for playing," but you barely even tried..`,
+  ],
 };
 
 // Server lifecycle states. OK -> BURNING -> BURNED_DOWN (permanent),
@@ -152,6 +187,11 @@ const ASSET_SOURCES = {
   floorTile: 'assets/images/floor_tile.png',
   deskTable: 'assets/images/desk_table.png',
   statPanelFrame: 'assets/images/stat_panel_frame.png',
+
+  // v3
+  serverRack: 'assets/sprites/server_rack.png',
+  fireSheet: 'assets/sprites/fire_spritesheet.png',
+  walkingSprite: 'assets/sprites/walking_sprite.png',
 };
 
 const ASSETS = {};
@@ -223,6 +263,27 @@ const SOLID_OBSTACLES = [
   })),
 ];
 
+/* -----------------------------------------------------------------------------
+   v3: sprite sheet geometry, derived from the source image dimensions given
+   in the brief. Kept out of CONFIG because they're computed, not hand-tuned.
+----------------------------------------------------------------------------- */
+// server_rack.png is 540x1116 — scale height to match the configured width.
+const SERVER_SPRITE_H = Math.round(CONFIG.SERVER_SPRITE_W * (1116 / 540));
+
+// fire_spritesheet.png: draw slightly wider than the rack, same aspect ratio
+// as one 164x393 frame.
+const FIRE_DRAW_SIZE = {
+  w: Math.round(CONFIG.SERVER_SPRITE_W * CONFIG.FIRE_DRAW_SCALE),
+  h: Math.round(
+    CONFIG.SERVER_SPRITE_W * CONFIG.FIRE_DRAW_SCALE * (CONFIG.FIRE_FRAME_H / CONFIG.FIRE_FRAME_W)
+  ),
+};
+
+// walking_sprite.png is 944x1133 in a 4x4 grid -> each source cell is
+// 236 x 283.25. Drawn scaled down to PLAYER_SPRITE_W wide, same aspect ratio.
+const PLAYER_CELL = { w: 944 / 4, h: 1133 / 4 };
+const PLAYER_SPRITE_H = Math.round(CONFIG.PLAYER_SPRITE_W * (PLAYER_CELL.h / PLAYER_CELL.w));
+
 
 /* -----------------------------------------------------------------------------
    INPUT: we only record which keys are currently held down. The logic layer
@@ -232,7 +293,7 @@ const SOLID_OBSTACLES = [
 const keys = {};
 
 window.addEventListener('keydown', (e) => {
-  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'Spacebar'].includes(e.key)) {
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'Spacebar', 'Escape'].includes(e.key)) {
     e.preventDefault();
   }
   keys[e.key] = true;
@@ -240,6 +301,13 @@ window.addEventListener('keydown', (e) => {
   // R restarts, but only once a game is actually in progress (see v2 menu:
   // ignore R while the main menu overlay is still showing).
   if ((e.key === 'r' || e.key === 'R') && game) startGame();
+
+  // v3: Escape toggles pause, but only during active gameplay — not on the
+  // main menu and not on the win/lose screen (game.phase stays PLAYING while
+  // paused, so this same check works for both pausing and resuming).
+  if (e.key === 'Escape' && game && game.phase === PHASE.PLAYING) {
+    setPaused(!game.paused);
+  }
 });
 
 window.addEventListener('keyup', (e) => {
@@ -256,15 +324,34 @@ function isSpaceHeld() {
 
 
 /* -----------------------------------------------------------------------------
-   v2: MAIN MENU wiring. The menu itself is plain DOM (index.html/style.css);
-   this just toggles it and starts/exits the game. `game` stays `null` while
-   the menu is showing, which the loop below treats as "nothing to update".
+   v2/v3: MAIN MENU wiring. The menu itself is plain DOM (index.html/
+   style.css); this just toggles it and starts/exits the game. `game` stays
+   `null` while the menu is showing, which the loop below treats as "nothing
+   to update". v3 adds showMenu()/hideMenu() as real functions (not just an
+   inline one-off) because Quit-to-menu now needs to bring the menu back.
 ----------------------------------------------------------------------------- */
 const menuOverlay = document.getElementById('menuOverlay');
+const menuVideo = document.getElementById('menuVideo');
 const exitFallbackMsg = document.getElementById('exitFallbackMsg');
 
-document.getElementById('btnStart').addEventListener('click', () => {
+function showMenu() {
+  menuOverlay.style.display = 'flex';
+  // Belt-and-braces: some browsers only honor autoplay if `muted` is also
+  // set as a JS property, not just the HTML attribute.
+  menuVideo.muted = true;
+  menuVideo.play().catch(() => {
+    // Autoplay blocked (or the file isn't there yet) — the overlay's own
+    // background-image already shows through, so there's nothing else to do.
+  });
+}
+
+function hideMenu() {
   menuOverlay.style.display = 'none';
+  menuVideo.pause();
+}
+
+document.getElementById('btnStart').addEventListener('click', () => {
+  hideMenu();
   startGame();
 });
 
@@ -277,6 +364,48 @@ document.getElementById('btnExit').addEventListener('click', () => {
 
 // "Change Map" and the mute/unmute button are `disabled` in the HTML, so
 // they already can't be clicked — no handlers needed until they do something.
+// NOTE for later: once the mute toggle is real, this is where to gate
+// unmuting the menu video — only turn sound on if the toggle is ON AND it
+// happens after a user gesture (autoplay policies block unmuted audio
+// otherwise). For now the video stays hard-muted regardless.
+
+
+/* -----------------------------------------------------------------------------
+   v3: Escape PAUSE MENU wiring. Also plain DOM, layered over the canvas only
+   while `game.paused` is true. update() (further down) is what actually
+   freezes the simulation — this just shows/hides the overlay and rolls a
+   random taunt line each time it opens.
+----------------------------------------------------------------------------- */
+const pauseOverlay = document.getElementById('pauseOverlay');
+const tauntText = document.getElementById('tauntText');
+
+let lastTauntIndex = -1;
+function rollTaunt() {
+  const lines = CONFIG.TAUNT_LINES;
+  let idx;
+  do {
+    idx = Math.floor(Math.random() * lines.length);
+  } while (idx === lastTauntIndex && lines.length > 1);
+  lastTauntIndex = idx;
+  tauntText.textContent = lines[idx];
+}
+
+function setPaused(paused) {
+  if (!game) return;
+  game.paused = paused;
+  pauseOverlay.style.display = paused ? 'flex' : 'none';
+  if (paused) rollTaunt();
+}
+
+document.getElementById('btnContinue').addEventListener('click', () => setPaused(false));
+
+document.getElementById('btnQuitToMenu').addEventListener('click', () => {
+  // Ends the current run (no score is recorded — only WON/LOST do that,
+  // unchanged from v2) and goes back to the main menu.
+  pauseOverlay.style.display = 'none';
+  game = null;
+  showMenu();
+});
 
 
 /* -----------------------------------------------------------------------------
@@ -310,12 +439,16 @@ function startGame() {
 
   game = {
     phase: PHASE.PLAYING,
+    paused: false,           // v3: Escape pause toggle
     elapsed: 0,
     igniteTimer: CONFIG.IGNITE_FIRST_DELAY,
 
     player: {
       x: tileCenter(spawnTile.col),
       y: tileCenter(spawnTile.row),
+      facing: 'down',        // v3: for the walk-cycle sprite
+      moving: false,
+      walkClock: 0,
     },
 
     spawnTile,
@@ -439,7 +572,8 @@ function allServersReachable(servers, spawnTile) {
    seconds, so the game behaves identically on a 60Hz and a 144Hz screen.
 ----------------------------------------------------------------------------- */
 function update(dt) {
-  if (!game || game.phase !== PHASE.PLAYING) return; // menu, or frozen on end screen
+  // menu, frozen on the end screen, or v3: paused via Escape
+  if (!game || game.phase !== PHASE.PLAYING || game.paused) return;
 
   game.elapsed += dt;
   game.score += CONFIG.POINTS.SURVIVE_PER_SEC * dt; // v2: trickle for staying alive
@@ -474,6 +608,18 @@ function updatePlayer(dt) {
 
   const triedY = clamp(p.y + dy, minPos, maxY);
   if (!collidesWithObstacles(p.x, triedY, half)) p.y = triedY;
+
+  // v3: facing + walk-cycle bookkeeping for the sprite. Vertical input wins
+  // over horizontal when both are held (arbitrary but consistent choice).
+  // Facing is only updated while actually moving, so the sprite keeps facing
+  // its last direction once you stop instead of snapping back to "down".
+  p.moving = dx !== 0 || dy !== 0;
+  if (dy < 0) p.facing = 'up';
+  else if (dy > 0) p.facing = 'down';
+  else if (dx < 0) p.facing = 'left';
+  else if (dx > 0) p.facing = 'right';
+
+  p.walkClock = p.moving ? p.walkClock + dt : 0;
 }
 
 function collidesWithObstacles(x, y, half) {
@@ -660,23 +806,55 @@ function drawDesks() {
   }
 }
 
+// v3: where to draw a server's body — either the tall rack sprite (bottom-
+// anchored near its tile so it "stands" on the floor like the desks do) or
+// the old flat square, whichever asset is actually loaded. Everything else
+// (target ring, countdown text, fire overlay) is positioned off this rect so
+// it lines up correctly either way.
+function getServerVisualRect(s) {
+  if (ASSETS.serverRack.loaded) {
+    const w = CONFIG.SERVER_SPRITE_W;
+    const h = SERVER_SPRITE_H;
+    return { left: s.x - w / 2, top: s.y - h + CONFIG.SERVER_SIZE / 2, w, h };
+  }
+  const w = CONFIG.SERVER_SIZE;
+  const h = CONFIG.SERVER_SIZE;
+  return { left: s.x - w / 2, top: s.y - h / 2, w, h };
+}
+
 function drawServers() {
-  const size = CONFIG.SERVER_SIZE;
-
   for (const s of game.servers) {
-    ctx.fillStyle =
-      s.state === STATE.BURNING     ? COLORS.burning :
-      s.state === STATE.BURNED_DOWN ? COLORS.burnedDown :
-                                      COLORS.ok;
+    const rect = getServerVisualRect(s);
 
-    ctx.fillRect(s.x - size / 2, s.y - size / 2, size, size);
+    if (ASSETS.serverRack.loaded) {
+      if (s.state === STATE.BURNED_DOWN) {
+        // "Charred" look: desaturate + darken the same sprite, then a low
+        // alpha dark overlay on top for extra soot.
+        ctx.filter = 'grayscale(1) brightness(0.35)';
+        ctx.drawImage(ASSETS.serverRack.img, rect.left, rect.top, rect.w, rect.h);
+        ctx.filter = 'none';
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+        ctx.fillRect(rect.left, rect.top, rect.w, rect.h);
+      } else {
+        // OK and BURNING both show the normal rack — fire is drawn on top.
+        ctx.drawImage(ASSETS.serverRack.img, rect.left, rect.top, rect.w, rect.h);
+      }
+      if (s.state === STATE.BURNING) drawFireOverlay(s, rect);
+    } else {
+      // Fallback: flat colored square, same as v1/v2.
+      ctx.fillStyle =
+        s.state === STATE.BURNING     ? COLORS.burning :
+        s.state === STATE.BURNED_DOWN ? COLORS.burnedDown :
+                                        COLORS.ok;
+      ctx.fillRect(rect.left, rect.top, rect.w, rect.h);
+    }
 
     if (game.phase === PHASE.PLAYING) {
       const target = findExtinguishTarget();
       if (target && target.id === s.id) {
         ctx.strokeStyle = COLORS.targetRing;
         ctx.lineWidth = 2;
-        ctx.strokeRect(s.x - size / 2 - 3, s.y - size / 2 - 3, size + 6, size + 6);
+        ctx.strokeRect(rect.left - 3, rect.top - 3, rect.w + 6, rect.h + 6);
       }
     }
 
@@ -685,15 +863,72 @@ function drawServers() {
       ctx.fillStyle = COLORS.cream;
       ctx.font = '10px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(`${left}s`, s.x, s.y + size / 2 + 12);
+      ctx.fillText(`${left}s`, s.x, rect.top + rect.h + 12);
     }
   }
 }
 
+// v3: animated fire, only drawn when the rack sprite itself is present (the
+// flat-square fallback above already communicates "burning" on its own via
+// color, so it doesn't need a second overlay).
+function drawFireOverlay(s, rect) {
+  const anchorX = rect.left + rect.w / 2;
+  // "Upper-middle" of the rack, per the brief — the flame's bottom edge
+  // (frames are bottom-aligned) sits here so it looks like it's coming out
+  // of the rack rather than floating above it.
+  const anchorY = rect.top + rect.h * 0.45;
+  const drawX = anchorX - FIRE_DRAW_SIZE.w / 2;
+  const drawY = anchorY - FIRE_DRAW_SIZE.h;
+
+  if (ASSETS.fireSheet.loaded) {
+    const frame = Math.floor(s.burnTimer * CONFIG.FIRE_ANIM_FPS) % CONFIG.FIRE_FRAME_COUNT;
+    ctx.drawImage(
+      ASSETS.fireSheet.img,
+      frame * CONFIG.FIRE_FRAME_W, 0, CONFIG.FIRE_FRAME_W, CONFIG.FIRE_FRAME_H,
+      drawX, drawY, FIRE_DRAW_SIZE.w, FIRE_DRAW_SIZE.h
+    );
+  } else {
+    // Simple pulsing flame blob fallback until the real sheet is added.
+    const pulse = 1 + 0.15 * Math.sin(performance.now() / 120 + s.id);
+    const r = (FIRE_DRAW_SIZE.w / 2) * pulse;
+    ctx.fillStyle = COLORS.accentDark;
+    ctx.beginPath();
+    ctx.arc(anchorX, anchorY - r * 0.6, r * 0.9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COLORS.accent;
+    ctx.beginPath();
+    ctx.arc(anchorX, anchorY - r * 0.5, r * 0.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
 function drawPlayer() {
-  const size = CONFIG.PLAYER_SIZE;
-  ctx.fillStyle = COLORS.player;
-  ctx.fillRect(game.player.x - size / 2, game.player.y - size / 2, size, size);
+  const p = game.player;
+
+  if (ASSETS.walkingSprite.loaded) {
+    const row = CONFIG.DIRECTION_ROWS[p.facing];
+    const frame = p.moving
+      ? Math.floor(p.walkClock * CONFIG.WALK_ANIM_FPS) % CONFIG.PLAYER_FRAME_COUNT
+      : 0; // idle pose
+
+    const w = CONFIG.PLAYER_SPRITE_W;
+    const h = PLAYER_SPRITE_H;
+    // Bottom-anchored on the player's actual collision point, same idea as
+    // the server rack — feet line up with where the hitbox really is.
+    const drawX = p.x - w / 2;
+    const drawY = p.y + CONFIG.PLAYER_SIZE / 2 - h;
+
+    ctx.drawImage(
+      ASSETS.walkingSprite.img,
+      frame * PLAYER_CELL.w, row * PLAYER_CELL.h, PLAYER_CELL.w, PLAYER_CELL.h,
+      drawX, drawY, w, h
+    );
+  } else {
+    // Fallback: flat blue square, same as v1/v2.
+    const size = CONFIG.PLAYER_SIZE;
+    ctx.fillStyle = COLORS.player;
+    ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
+  }
 }
 
 function drawExtinguishBar() {
@@ -882,4 +1117,5 @@ function loop(now) {
 
 // v2: no auto-start — the player begins at the main menu (see menuOverlay
 // wiring above). The loop still runs so the canvas renders behind it.
+showMenu(); // v3: also kicks off the background video's autoplay attempt
 requestAnimationFrame(loop);
