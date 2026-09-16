@@ -1,5 +1,5 @@
 /* =============================================================================
-   RevOps Firefighter — v9
+   RevOps Firefighter — v10
    =============================================================================
    v1 was logic-only rectangles. v2 added textures/menu/HUD/scoring. v3 added
    sprites/video/pause-menu (v3.1 map select, v4 balance + the Shantanu boss
@@ -11,11 +11,19 @@
        to satisfy v8's wall-clearance and server-overlap checks on every
        map, including the two that previously failed 100% of the time and
        placed zero servers. No map's desk/partition layout needed to change.
+     - every map's desk/partition tiles are shifted (+3 cols, +2 rows) — the
+       same amount the grid grew on each side — so each layout stays
+       centered in the bigger room instead of pinned to its old position in
+       the new room's top-left corner. Pure repositioning; nothing resized.
      - the stats panel (beside the canvas) and controls panel (under it) now
        derive their pixel size — and their internal font sizes/line spacing —
        from the main canvas instead of fixed constants, so any future grid
        resize keeps them proportional automatically (see BASE_CANVAS_W/H,
        STATS_PANEL_SCALE, CONTROLS_PANEL_SCALE).
+   v10: the top-5 leaderboard now persists to localStorage (see
+     LEADERBOARD_STORAGE_KEY) instead of resetting every reload — same
+     browser/device only, since this is client-side storage, not a shared
+     backend.
 
    Architecture is unchanged:
      - DATA LAYER      : CONFIG + LEVELS + the `game` state object.
@@ -26,8 +34,8 @@
                          one.
 
    Each version's additions are labelled "v2:" / "v3:" / "v3.1:" / "v4:" /
-   "v5:" / "v7:" / "v8:" / "v9:" in comments so the diff against the previous
-   version is easy to follow.
+   "v5:" / "v7:" / "v8:" / "v9:" / "v10:" in comments so the diff against the
+   previous version is easy to follow.
 ============================================================================= */
 
 
@@ -99,7 +107,7 @@ const CONFIG = {
   POINTS: {
     EXTINGUISH: 1,        // per server successfully put out — the only rule
   },
-  LEADERBOARD_SIZE: 5,    // top N scores kept for this browser session
+  LEADERBOARD_SIZE: 5,    // top N scores kept (persisted per-browser, v10)
 
   // --- v2/v5: HUD sizing --------------------------------------------------------
   // v5: was 0.55 when this panel sat small in the corner of the game canvas;
@@ -838,10 +846,36 @@ document.getElementById('btnQuitToMenu').addEventListener('click', () => {
 
 
 /* -----------------------------------------------------------------------------
-   v2: in-memory session leaderboard. Lives for as long as the tab is open;
-   intentionally not persisted (no localStorage / backend yet, per spec).
+   v10: persistent top-5 leaderboard, saved to localStorage so it survives a
+   page reload (or closing the tab/browser entirely) instead of resetting
+   every time — was in-memory-only through v9.
 ----------------------------------------------------------------------------- */
-let sessionLeaderboard = [];
+const LEADERBOARD_STORAGE_KEY = 'revopsFirefighter.leaderboard';
+
+// Reads whatever was saved last time, tolerating anything that could go
+// wrong (private-browsing mode blocking storage, corrupted/old-shape JSON,
+// storage disabled entirely) by just falling back to an empty leaderboard —
+// this should never be the reason the game fails to load.
+function loadLeaderboard() {
+  try {
+    const raw = localStorage.getItem(LEADERBOARD_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLeaderboard() {
+  try {
+    localStorage.setItem(LEADERBOARD_STORAGE_KEY, JSON.stringify(leaderboard));
+  } catch {
+    // Storage full/disabled/private-mode — the run still finished fine, so
+    // just silently skip persisting this time rather than breaking anything.
+  }
+}
+
+let leaderboard = loadLeaderboard();
 
 // v7: the leaderboard now ranks by finalScore = extinguishedCount * secondsPlayed
 // (computed on game over), not the raw in-run +1-per-extinguish score.
@@ -850,9 +884,10 @@ function recordFinalScore() {
   const secondsPlayed = Math.floor(game.elapsed);
   const finalScore = extinguishedCount * secondsPlayed;
 
-  sessionLeaderboard.push({ finalScore, extinguishedCount, secondsPlayed });
-  sessionLeaderboard.sort((a, b) => b.finalScore - a.finalScore);
-  sessionLeaderboard.length = Math.min(sessionLeaderboard.length, CONFIG.LEADERBOARD_SIZE);
+  leaderboard.push({ finalScore, extinguishedCount, secondsPlayed });
+  leaderboard.sort((a, b) => b.finalScore - a.finalScore);
+  leaderboard.length = Math.min(leaderboard.length, CONFIG.LEADERBOARD_SIZE);
+  saveLeaderboard(); // v10
 }
 
 
@@ -2023,12 +2058,13 @@ function drawEndScreen() {
   ctx.fillText('"You are the reasons the wizard invests into', canvas.width / 2, canvas.height / 2 - 38);
   ctx.fillText('his number one operating priority!"', canvas.width / 2, canvas.height / 2 - 20);
 
-  // v2/v7: session leaderboard, top 5, ranked by finalScore now.
+  // v2/v7/v10: top 5, ranked by finalScore, persisted across reloads now
+  // (see LEADERBOARD_STORAGE_KEY above) — no longer just "this session".
   ctx.font = '13px monospace';
   ctx.fillStyle = COLORS.cream;
-  ctx.fillText('TOP 5 THIS SESSION', canvas.width / 2, canvas.height / 2 + 12);
+  ctx.fillText('TOP 5 BEST SCORES', canvas.width / 2, canvas.height / 2 + 12);
 
-  sessionLeaderboard.forEach((entry, i) => {
+  leaderboard.forEach((entry, i) => {
     ctx.fillStyle = i === 0 ? COLORS.accent : COLORS.grey;
     ctx.fillText(
       `${i + 1}. ${entry.finalScore} pts  ·  ${entry.extinguishedCount} saved  ·  ${formatTime(entry.secondsPlayed)}`,
@@ -2039,7 +2075,7 @@ function drawEndScreen() {
 
   ctx.fillStyle = COLORS.cream;
   ctx.font = '14px monospace';
-  ctx.fillText('press R to restart', canvas.width / 2, canvas.height / 2 + 34 + sessionLeaderboard.length * 18 + 22);
+  ctx.fillText('press R to restart', canvas.width / 2, canvas.height / 2 + 34 + leaderboard.length * 18 + 22);
 }
 
 
