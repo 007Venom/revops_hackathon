@@ -435,23 +435,17 @@ function isSpaceHeld() {
    inline one-off) because Quit-to-menu now needs to bring the menu back.
 ----------------------------------------------------------------------------- */
 const menuOverlay = document.getElementById('menuOverlay');
-const menuVideo = document.getElementById('menuVideo');
 const exitFallbackMsg = document.getElementById('exitFallbackMsg');
 
+// v4.2: the menu background is a looping GIF now (<img>, not <video>), so
+// there's no play()/pause()/muted to manage here anymore — showing/hiding
+// the overlay is all that's needed; the GIF just keeps animating underneath.
 function showMenu() {
   menuOverlay.style.display = 'flex';
-  // Belt-and-braces: some browsers only honor autoplay if `muted` is also
-  // set as a JS property, not just the HTML attribute.
-  menuVideo.muted = true;
-  menuVideo.play().catch(() => {
-    // Autoplay blocked (or the file isn't there yet) — the overlay's own
-    // background-image already shows through, so there's nothing else to do.
-  });
 }
 
 function hideMenu() {
   menuOverlay.style.display = 'none';
-  menuVideo.pause();
 }
 
 document.getElementById('btnStart').addEventListener('click', () => {
@@ -467,11 +461,7 @@ document.getElementById('btnExit').addEventListener('click', () => {
 });
 
 // The mute/unmute button is `disabled` in the HTML, so it already can't be
-// clicked — no handler needed until it does something.
-// NOTE for later: once the mute toggle is real, this is where to gate
-// unmuting the menu video — only turn sound on if the toggle is ON AND it
-// happens after a user gesture (autoplay policies block unmuted audio
-// otherwise). For now the video stays hard-muted regardless.
+// clicked — no handler needed until there's actual game audio to gate it.
 
 
 /* -----------------------------------------------------------------------------
@@ -522,47 +512,86 @@ function renderMapCards() {
   });
 }
 
-// Small schematic preview drawn with the same colors the real room uses
-// (see COLORS), so each card is an accurate "here's what you'll see", not a
-// separate mockup that could drift out of sync with the real rendering.
-const MAP_PREVIEW_TILE_PX = 10;
+// v4.1: preview drawn with the real room sprites (floor/wall/desk tiles,
+// the player's idle sprite at spawn) once they're loaded — same "PNG not
+// there yet -> flat fallback shape" convention as drawRoom()/drawDesks()/
+// drawPlayer(), so a card never looks broken while assets are still being
+// dropped in, and it stays a true "here's what you'll see" preview instead
+// of a separate mockup that can drift out of sync with the real rendering.
+const MAP_PREVIEW_TILE_PX = 16;
 
 function drawMapPreview(canvas, map) {
   const pctx = canvas.getContext('2d');
   const t = MAP_PREVIEW_TILE_PX;
 
-  pctx.fillStyle = COLORS.bgDark;
-  pctx.fillRect(0, 0, canvas.width, canvas.height);
+  // Floor, tiled across the whole preview.
+  if (ASSETS.floorTile.loaded) {
+    for (let c = 0; c < CONFIG.COLS; c++) {
+      for (let r = 0; r < CONFIG.ROWS; r++) {
+        pctx.drawImage(ASSETS.floorTile.img, c * t, r * t, t, t);
+      }
+    }
+  } else {
+    pctx.fillStyle = COLORS.bgDark;
+    pctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
 
-  // Border wall.
-  pctx.fillStyle = COLORS.bgMid;
+  // Border wall + partitions — same wall art, same tile list shape as the
+  // real activeMap.wallTiles built in buildMapLayout().
+  const wallTiles = [];
   for (let c = 0; c < CONFIG.COLS; c++) {
-    pctx.fillRect(c * t, 0, t, t);
-    pctx.fillRect(c * t, (CONFIG.ROWS - 1) * t, t, t);
+    wallTiles.push({ col: c, row: 0 });
+    wallTiles.push({ col: c, row: CONFIG.ROWS - 1 });
   }
   for (let r = 1; r < CONFIG.ROWS - 1; r++) {
-    pctx.fillRect(0, r * t, t, t);
-    pctx.fillRect((CONFIG.COLS - 1) * t, r * t, t, t);
+    wallTiles.push({ col: 0, row: r });
+    wallTiles.push({ col: CONFIG.COLS - 1, row: r });
+  }
+  wallTiles.push(...map.partitionTiles);
+
+  for (const w of wallTiles) {
+    if (ASSETS.wallTile.loaded) {
+      pctx.drawImage(ASSETS.wallTile.img, w.col * t, w.row * t, t, t);
+    } else {
+      pctx.fillStyle = COLORS.bgMid;
+      pctx.fillRect(w.col * t, w.row * t, t, t);
+    }
   }
 
-  // Partitions (same fill as the wall — that's how they render in-game too).
-  for (const p of map.partitionTiles) {
-    pctx.fillRect(p.col * t, p.row * t, t, t);
-  }
-
-  // Desks.
-  pctx.fillStyle = COLORS.deskFallback;
+  // Desks, stretched to their 3x2 footprint.
   for (const d of map.deskTiles) {
-    pctx.fillRect(d.col * t, d.row * t, CONFIG.DESK_COLS * t, CONFIG.DESK_ROWS * t);
+    if (ASSETS.deskTable.loaded) {
+      pctx.drawImage(ASSETS.deskTable.img, d.col * t, d.row * t, CONFIG.DESK_COLS * t, CONFIG.DESK_ROWS * t);
+    } else {
+      pctx.fillStyle = COLORS.deskFallback;
+      pctx.fillRect(d.col * t, d.row * t, CONFIG.DESK_COLS * t, CONFIG.DESK_ROWS * t);
+    }
   }
 
   // Spawn marker — always the grid center, same tile startGame() uses.
   const spawnCol = Math.floor(CONFIG.COLS / 2);
   const spawnRow = Math.floor(CONFIG.ROWS / 2);
-  pctx.fillStyle = COLORS.player;
-  pctx.beginPath();
-  pctx.arc((spawnCol + 0.5) * t, (spawnRow + 0.5) * t, t * 0.35, 0, Math.PI * 2);
-  pctx.fill();
+  const spawnX = (spawnCol + 0.5) * t;
+  const spawnY = (spawnRow + 0.5) * t;
+
+  if (ASSETS.walkingSprite.loaded) {
+    // Idle "facing down" frame — row 0, frame 0 — same convention drawPlayer()
+    // uses for an idle player (PLAYER_CELL is defined once, above, and reused
+    // here rather than recomputed).
+    const drawH = t * 1.6;
+    const drawW = drawH * (PLAYER_CELL.w / PLAYER_CELL.h);
+    pctx.drawImage(
+      ASSETS.walkingSprite.img,
+      0, 0, PLAYER_CELL.w, PLAYER_CELL.h,
+      spawnX - drawW / 2, spawnY - drawH * 0.75,
+      drawW, drawH
+    );
+  } else {
+    pctx.fillStyle = COLORS.player;
+    pctx.beginPath();
+    pctx.arc(spawnX, spawnY, t * 0.35, 0, Math.PI * 2);
+    pctx.fill();
+  }
 }
 
 function chooseMap(map) {
@@ -1011,8 +1040,6 @@ function updateShantanuTimer(dt) {
   s.moving = true;
   s.walkClock = 0;
   s.targetServerId = null;
-
-  console.log(`[Shantanu] incoming from the ${spawn.edge} edge.`);
 }
 
 // Moves (x, y) toward (targetX, targetY) by at most maxDist, snapping
@@ -1104,7 +1131,6 @@ function updateShantanuActor(dt) {
       if (target) {
         target.state = STATE.BURNING;
         target.burnTimer = 0;
-        console.log(`[Shantanu] forced server #${target.id} into BURNING.`);
       }
       s.state = 'LEAVING';
       s.facing = EDGE_FACING_OUT[s.edge];
@@ -1380,12 +1406,6 @@ function drawShantanu() {
   }
 
   if (s.state === 'TALKING') drawSpeechBubble(s.x, drawY, CONFIG.SHANTANU_BUBBLE_TEXT);
-
-  // Debug label so the trigger/event timing is easy to verify while testing.
-  ctx.fillStyle = COLORS.grey;
-  ctx.font = '9px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText(`SHANTANU: ${s.state}`, s.x, drawY + h + 12);
 }
 
 // Simple comic-style speech bubble: rounded rect + a small pointer triangle
@@ -1616,5 +1636,5 @@ function loop(now) {
 
 // v2: no auto-start — the player begins at the main menu (see menuOverlay
 // wiring above). The loop still runs so the canvas renders behind it.
-showMenu(); // v3: also kicks off the background video's autoplay attempt
+showMenu();
 requestAnimationFrame(loop);

@@ -75,9 +75,9 @@ canvas {
   border: 2px solid #444444;
 }
 
-/* v3: looping background video, sits between the overlay's own background-
-   image (fallback) and the menu panel content. */
-.menu-video {
+/* v4.2: looping background GIF (was a video), sits between the overlay's
+   own background-image (fallback) and the menu panel content. */
+.menu-gif {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -94,7 +94,7 @@ canvas {
   align-items: center;
   gap: 10px;
   padding: 24px 32px;
-  /* Readability over the video regardless of what's playing behind it. */
+  /* Readability over the GIF regardless of what's playing behind it. */
   background: rgba(25, 30, 43, 0.45);
   border-radius: 10px;
 }
@@ -197,7 +197,7 @@ canvas {
 
 /* -----------------------------------------------------------------------
    v3: Escape pause overlay — sits over the canvas mid-game. Lighter-weight
-   than the main menu (no video/background image, just a dim + a card).
+   than the main menu (no GIF/background image, just a dim + a card).
 ----------------------------------------------------------------------- */
 .pause-overlay {
   position: absolute;

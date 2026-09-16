@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
 
-  <link rel="stylesheet" href="style.css?v=005">
+  <link rel="stylesheet" href="style.css?v=006">
 </head>
 <body>
   <!-- CLIENT/UI LAYER -->
@@ -28,20 +28,17 @@
          menu. This is DOM, not canvas, so the browser handles video/image
          loading and button clicks for us without any extra preloading code. -->
     <div id="menuOverlay" class="menu-overlay">
-      <!-- v3: looping background video. Muted+autoplay+loop is required for
-           autoplay to work in any browser. The div's own background-image
-           (title_bg_wash.png, set in style.css) sits behind this and shows
-           through automatically if the video fails to load or hasn't
-           painted its first frame yet — no extra fallback code needed. -->
-      <video
-        id="menuVideo"
-        class="menu-video"
-        src="assets/video/MainPage_VideoOneTime.mp4"
-        autoplay
-        loop
-        muted
-        playsinline
-      ></video>
+      <!-- v4.2: looping background GIF (was an mp4 video). GIFs animate/loop
+           on their own with no JS or autoplay attributes needed. The div's
+           own background-image (title_bg_wash.png, set in style.css) sits
+           behind this and shows through automatically if the GIF fails to
+           load — no extra fallback code needed. -->
+      <img
+        id="menuGif"
+        class="menu-gif"
+        src="assets/video/MainPage_VideoOneTime.gif"
+        alt=""
+      >
 
       <div class="menu-panel">
         <img class="menu-badge" src="assets/images/personio_pixel_badge.png" alt="Personio badge">
@@ -100,6 +97,6 @@
   <p class="hint">Arrow keys = move &nbsp;·&nbsp; hold SPACE next to a burning server = extinguish &nbsp;·&nbsp; ESC = pause &nbsp;·&nbsp; R = restart</p>
 
   <!-- LOGIC LAYER -->
-  <script src="game.js?v=005"></script>
+  <script src="game.js?v=007"></script>
 </body>
 </html>
