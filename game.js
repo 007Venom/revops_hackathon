@@ -142,7 +142,7 @@ const CONFIG = {
   // v7: the score threshold that used to arm this is gone — whether he's
   // active at all is now just LEVELS[].shantanuEnabled. His own cadence once
   // armed is unchanged.
-  SHANTANU_INTERVAL: 15,         // seconds (game-time; frozen while paused)
+  SHANTANU_INTERVAL: 10,         // seconds (game-time; frozen while paused)
   SHANTANU_WALK_SPEED: 150,      // pixels per second
   SHANTANU_ENTRY_DEPTH_TILES: 3, // how far in from the wall he stops to talk
   SHANTANU_BUBBLE_DURATION: 2.0, // seconds the speech bubble stays up
@@ -176,10 +176,10 @@ const CONFIG = {
 ----------------------------------------------------------------------------- */
 const LEVELS = [
   { level: 1, minScore: 0,  fireInterval: 8, burnTime: 14, speedMultiplier: 1.00, shantanuEnabled: false },
-  { level: 2, minScore: 10, fireInterval: 8, burnTime: 14, speedMultiplier: 1.00, shantanuEnabled: true  },
-  { level: 3, minScore: 20, fireInterval: 7, burnTime: 12, speedMultiplier: 1.25, shantanuEnabled: true  },
-  { level: 4, minScore: 30, fireInterval: 6,  burnTime: 10, speedMultiplier: 1.50, shantanuEnabled: true  },
-  { level: 5, minScore: 40, fireInterval: 6,  burnTime: 8,  speedMultiplier: 1.75, shantanuEnabled: true  },
+  { level: 2, minScore: 5, fireInterval: 8, burnTime: 14, speedMultiplier: 1.00, shantanuEnabled: true  },
+  { level: 3, minScore: 10, fireInterval: 7, burnTime: 12, speedMultiplier: 1.25, shantanuEnabled: true  },
+  { level: 4, minScore: 15, fireInterval: 6,  burnTime: 10, speedMultiplier: 1.50, shantanuEnabled: true  },
+  { level: 5, minScore: 20, fireInterval: 6,  burnTime: 8,  speedMultiplier: 1.75, shantanuEnabled: true  },
 ];
 
 // Current level = the highest entry whose minScore is <= score. LEVELS is
