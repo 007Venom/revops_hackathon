@@ -1,0 +1,36 @@
+/* CLIENT/UI LAYER — deliberately minimal for v1. Polish comes in v2. */
+body {
+  margin: 0;
+  padding: 24px;
+  background: #1a1a1a;
+  color: #dddddd;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.version {
+  color: #888888;
+  font-weight: 400;
+}
+
+canvas {
+  background: #2b2b2b;
+  border: 2px solid #444444;
+  /* Keep pixels crisp — we are drawing plain rectangles. */
+  image-rendering: pixelated;
+}
+
+.hint {
+  font-size: 12px;
+  color: #999999;
+  margin: 0;
+}
