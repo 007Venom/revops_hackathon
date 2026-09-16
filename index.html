@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="robots" content="noindex, nofollow">
-  <title>RevOps Firefighter — v4</title>
+  <title>RevOps Firefighter — v5</title>
 
   <!-- Pixel-style display font for the in-game HUD. Google Fonts, loaded via
        CDN link tag per project rules (Section 9) — no build step involved.
@@ -14,89 +14,112 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
 
-  <link rel="stylesheet" href="style.css?v=006">
+  <link rel="stylesheet" href="style.css?v=008">
 </head>
 <body>
   <!-- CLIENT/UI LAYER -->
-  <h1>RevOps Firefighter <span class="version">v4</span></h1>
+  <h1>RevOps Firefighter <span class="version">v5</span></h1>
 
-  <div class="game-wrap">
-    <canvas id="game" width="800" height="560"></canvas>
+  <!-- v5: game canvas + stats panel now sit side by side; the controls
+       panel sits under the canvas. Both new panels are their own small
+       canvases (see statsCanvas/controlsCanvas in game.js) so they can
+       reuse the exact same stat_panel_frame.png drawing code the old
+       in-canvas HUD already had, just bigger and centered. -->
+  <div class="game-layout">
+    <div class="game-column">
+      <div class="game-wrap">
+        <canvas id="game" width="800" height="560"></canvas>
 
-    <!-- Main menu overlay. Pure HTML/CSS on top of the canvas — shown before
-         the first game starts, and again if the player Quits from the pause
-         menu. This is DOM, not canvas, so the browser handles video/image
-         loading and button clicks for us without any extra preloading code. -->
-    <div id="menuOverlay" class="menu-overlay">
-      <!-- v4.2: looping background GIF (was an mp4 video). GIFs animate/loop
-           on their own with no JS or autoplay attributes needed. The div's
-           own background-image (title_bg_wash.png, set in style.css) sits
-           behind this and shows through automatically if the GIF fails to
-           load — no extra fallback code needed. -->
-      <img
-        id="menuGif"
-        class="menu-gif"
-        src="assets/video/MainPage_VideoOneTime.gif"
-        alt=""
-      >
+        <!-- Main menu overlay. Pure HTML/CSS on top of the canvas — shown
+             before the first game starts, and again if the player Quits
+             from the pause menu. This is DOM, not canvas, so the browser
+             handles image loading and button clicks for us without any
+             extra preloading code. -->
+        <div id="menuOverlay" class="menu-overlay">
+          <!-- v4.2: looping background GIF (was an mp4 video). GIFs animate/
+               loop on their own with no JS or autoplay attributes needed.
+               The div's own background-image (title_bg_wash.png, set in
+               style.css) sits behind this and shows through automatically
+               if the GIF fails to load — no extra fallback code needed. -->
+          <img
+            id="menuGif"
+            class="menu-gif"
+            src="assets/video/MainPage_VideoOneTime.gif"
+            alt=""
+          >
 
-      <div class="menu-panel">
-        <img class="menu-badge" src="assets/images/personio_pixel_badge.png" alt="Personio badge">
-        <h2 class="menu-title">RevOps Firefighter</h2>
-        <p class="menu-subtitle">Keep the revenue stack alive.</p>
+          <div class="menu-panel">
+            <img class="menu-badge" src="assets/images/personio_pixel_badge.png" alt="Personio badge">
+            <h2 class="menu-title">RevOps Firefighter</h2>
+            <p class="menu-subtitle">Keep the revenue stack alive.</p>
 
-        <div class="menu-buttons">
-          <button id="btnStart" class="menu-btn menu-btn--primary">Start Game</button>
-          <button id="btnExit" class="menu-btn">Exit Game</button>
+            <div class="menu-buttons">
+              <button id="btnStart" class="menu-btn menu-btn--primary">Start Game</button>
+              <button id="btnExit" class="menu-btn">Exit Game</button>
+            </div>
+
+            <div class="menu-buttons menu-buttons--secondary">
+              <button id="btnMute" class="menu-btn menu-btn--ghost menu-btn--icon" title="Mute / unmute sound">
+                🔊
+              </button>
+            </div>
+
+            <p id="exitFallbackMsg" class="menu-fallback-msg" hidden>
+              Your browser won't let a page close a tab it didn't open — you can close this tab yourself.
+            </p>
+          </div>
         </div>
 
-        <div class="menu-buttons menu-buttons--secondary">
-          <button id="btnMute" class="menu-btn menu-btn--ghost menu-btn--icon" disabled title="Coming soon">
-            🔊
-          </button>
+        <!-- v3.1: Map Select overlay. Shown after "Start Game" (and after
+             Quit-to-menu -> Start Game again) instead of jumping straight
+             into a run — the player picks one of the MAPS layouts defined
+             in game.js, which builds the actual card previews + click
+             handlers. -->
+        <div id="mapSelectOverlay" class="map-select-overlay" style="display: none;">
+          <div class="map-select-panel">
+            <h2 class="menu-title">Choose Your Floor Plan</h2>
+            <p class="menu-subtitle">Same fires, different desks — pick a layout.</p>
+
+            <div id="mapCardsGrid" class="map-cards-grid"></div>
+
+            <button id="btnMapBack" class="menu-btn menu-btn--ghost">&larr; Back</button>
+          </div>
         </div>
 
-        <p id="exitFallbackMsg" class="menu-fallback-msg" hidden>
-          Your browser won't let a page close a tab it didn't open — you can close this tab yourself.
-        </p>
-      </div>
-    </div>
+        <!-- v3: Escape pause overlay. Only ever shown/hidden while a game
+             is in progress — see setPaused() in game.js. -->
+        <div id="pauseOverlay" class="pause-overlay" style="display: none;">
+          <div class="pause-panel">
+            <h2 class="pause-title">PAUSED</h2>
 
-    <!-- v3.1: Map Select overlay. Shown after "Start Game" (and after
-         Quit-to-menu -> Start Game again) instead of jumping straight into a
-         run — the player picks one of the MAPS layouts defined in game.js,
-         which builds the actual card previews + click handlers. -->
-    <div id="mapSelectOverlay" class="map-select-overlay" style="display: none;">
-      <div class="map-select-panel">
-        <h2 class="menu-title">Choose Your Floor Plan</h2>
-        <p class="menu-subtitle">Same fires, different desks — pick a layout.</p>
-
-        <div id="mapCardsGrid" class="map-cards-grid"></div>
-
-        <button id="btnMapBack" class="menu-btn menu-btn--ghost">&larr; Back</button>
-      </div>
-    </div>
-
-    <!-- v3: Escape pause overlay. Only ever shown/hidden while a game is in
-         progress — see setPaused() in game.js. -->
-    <div id="pauseOverlay" class="pause-overlay" style="display: none;">
-      <div class="pause-panel">
-        <h2 class="pause-title">PAUSED</h2>
-
-        <div class="pause-buttons">
-          <button id="btnContinue" class="menu-btn menu-btn--primary">Continue Game</button>
-          <div class="pause-quit-group">
-            <button id="btnQuitToMenu" class="menu-btn">Quit Game</button>
-            <p id="tauntText" class="pause-taunt"></p>
+            <div class="pause-buttons">
+              <button id="btnContinue" class="menu-btn menu-btn--primary">Continue Game</button>
+              <div class="pause-quit-group">
+                <button id="btnQuitToMenu" class="menu-btn">Quit Game</button>
+                <p id="tauntText" class="pause-taunt"></p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
+
+      <!-- v5: controls / how-to-play reference card, directly under the
+           canvas. Static content — drawn by drawControlsPanel() in game.js. -->
+      <canvas id="controlsCanvas" class="hud-canvas" width="480" height="267"></canvas>
     </div>
+
+    <!-- v5: stats panel, moved out of the game canvas entirely and drawn on
+         its own canvas beside it — see drawSideStatsPanel() in game.js. -->
+    <canvas id="statsCanvas" class="hud-canvas" width="360" height="200"></canvas>
   </div>
 
-  <p class="hint">Arrow keys = move &nbsp;·&nbsp; hold SPACE next to a burning server = extinguish &nbsp;·&nbsp; ESC = pause &nbsp;·&nbsp; R = restart</p>
+  <!-- v5: gameplay music + Shantanu's one-shot alarm. No visible controls —
+       playback is driven entirely from game.js (start/pause/resume hooks +
+       the mute button above). -->
+  <audio id="gameplayMusic" src="assets/audio/gameplay_loop_music.mp4" loop></audio>
+  <audio id="shantanuAlarm" src="assets/audio/shantanu_alarm.mp3"></audio>
 
   <!-- LOGIC LAYER -->
-  <script src="game.js?v=007"></script>
+  <script src="game.js?v=008"></script>
 </body>
 </html>

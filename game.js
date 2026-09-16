@@ -1,23 +1,29 @@
 /* =============================================================================
-   RevOps Firefighter — v4
+   RevOps Firefighter — v5
    =============================================================================
    v1 was logic-only rectangles. v2 added textures/menu/HUD/scoring. v3 added
-   sprites/video/pause-menu (and v3.1 added map select). v4 adds:
-     - a less punishing burn-down timer (8s -> 16s)
-     - a simpler scoring rule: +1 per extinguish, no other modifiers
-     - a "Shantanu" boss event: once score >= 10, every 30s he walks in from
-       a random edge, drops a speech-bubble one-liner, force-ignites a
-       random OK server, and walks back out — modeled as its own small state
-       machine alongside the fire/extinguish one
+   sprites/video/pause-menu (v3.1 map select, v4 balance + the Shantanu boss
+   event, v4.1/v4.2 cleanup + a GIF menu background). v5 adds:
+     - walking_sprite_v2.png (fixes the player's walk-cycle "jump" bug) and a
+       dedicated burned_server_rack.png (replacing the old grayscale filter)
+     - gameplay music + a one-shot Shantanu alarm, both gated by a now-real
+       mute button
+     - the player (and Shantanu, matched to the same size) rendered twice as
+       big on screen
+     - the stats panel moved off the game canvas onto its own side panel, a
+       new static controls/how-to-play panel under the canvas
 
    Architecture is unchanged:
      - DATA LAYER      : CONFIG + the `game` state object.
      - LOGIC LAYER     : update() and its helpers.
      - CLIENT/UI LAYER : draw() + the DOM menu/pause overlays in
-                         index.html/style.css.
+                         index.html/style.css, plus two more small HUD
+                         canvases (stats/controls) drawn alongside the main
+                         one.
 
-   Each version's additions are labelled "v2:" / "v3:" / "v3.1:" / "v4:" in
-   comments so the diff against the previous version is easy to follow.
+   Each version's additions are labelled "v2:" / "v3:" / "v3.1:" / "v4:" /
+   "v5:" in comments so the diff against the previous version is easy to
+   follow.
 ============================================================================= */
 
 
@@ -39,7 +45,10 @@ const CONFIG = {
   MAX_BURNED_ALLOWED: 3,  // you lose when this many servers are BURNED_DOWN
 
   // --- Player ---------------------------------------------------------------
-  PLAYER_SIZE: 24,
+  // v5: both doubled alongside PLAYER_SPRITE_W below, keeping the same
+  // hitbox-to-sprite-width ratio (0.6) the smaller sprite had — movement
+  // speed and the collision code itself are unchanged, only these sizes.
+  PLAYER_SIZE: 48,        // was 24
   PLAYER_SPEED: 190,      // pixels per second
 
   // --- Fire timing ----------------------------------------------------------
@@ -76,8 +85,13 @@ const CONFIG = {
   },
   LEADERBOARD_SIZE: 5,    // top N scores kept for this browser session
 
-  // --- v2: HUD sizing ---------------------------------------------------------
-  HUD_PANEL_SCALE: 0.55,  // stat_panel_frame.png (288x160) drawn at this scale
+  // --- v2/v5: HUD sizing --------------------------------------------------------
+  // v5: was 0.55 when this panel sat small in the corner of the game canvas;
+  // now it's a dedicated side panel, so it's drawn much bigger (see
+  // statsCanvas sizing, near where `canvas` itself is set up).
+  HUD_PANEL_SCALE: 1.25,  // stat_panel_frame.png (288x160) drawn at this scale
+  CONTROLS_PANEL_W: 480,  // v5: controls/how-to-play panel, same frame art
+  CONTROLS_PANEL_H: 267,  // (kept at ~the frame's native 1.8:1 aspect ratio)
 
   // --- v3: server rack + fire sprites -----------------------------------------
   SERVER_SPRITE_W: 40,       // drawn width; server_rack.png is 540x1116 (tall)
@@ -87,14 +101,18 @@ const CONFIG = {
   FIRE_ANIM_FPS: 9,          // within the requested 8-10fps range
   FIRE_DRAW_SCALE: 1.3,      // fire drawn slightly wider than the rack
 
-  // --- v3: player walk cycle ---------------------------------------------------
-  // walking_sprite.png is a 4x4 grid, ~236x283 per cell. Row -> facing
-  // direction, guessed from the sheet by eye — see the v3 chat reply for
-  // which mapping this is; flag if a direction looks wrong and we'll swap.
+  // --- v3/v5: player walk cycle -------------------------------------------------
+  // v5: walking_sprite_v2.png replaces walking_sprite.png — a corrected sheet
+  // (frames trimmed to content, bottom-aligned on a uniform grid) that fixes
+  // the "jumping" bug the old uneven frame cropping caused. Cell size is now
+  // 248x283 (see PLAYER_CELL below) instead of the old 236x283.25. Same
+  // direction-row mapping, guessed by eye — flag any direction that looks
+  // wrong and we'll swap rows. Frame index 14 (row 3, col 2) may have some
+  // missing body detail from the cleanup pass — watch for it mid-animation.
   DIRECTION_ROWS: { down: 0, up: 3, left: 1, right: 2 },
   PLAYER_FRAME_COUNT: 4,
   WALK_ANIM_FPS: 8,
-  PLAYER_SPRITE_W: 40,       // drawn width of the character sprite
+  PLAYER_SPRITE_W: 80,       // v5: doubled from 40 — drawn width of the character
 
   // --- v4: Shantanu boss event --------------------------------------------------
   SHANTANU_SCORE_THRESHOLD: 10,  // score needed to arm the repeating timer
@@ -103,7 +121,8 @@ const CONFIG = {
   SHANTANU_ENTRY_DEPTH_TILES: 3, // how far in from the wall he stops to talk
   SHANTANU_BUBBLE_DURATION: 2.0, // seconds the speech bubble stays up
   SHANTANU_BUBBLE_TEXT: 'I have BAD SHANTANEWS for you!',
-  SHANTANU_SPRITE_W: 46,         // a bit bigger than the player — reads as a boss
+  // v5: his drawn size now just matches the player's (see SHANTANU_SPRITE_W,
+  // derived from PLAYER_SPRITE_W further down) — no longer its own constant.
 
   // --- v3: pause menu taunts ---------------------------------------------------
   // Exact wording as given — do not edit these strings.
@@ -169,6 +188,19 @@ const ctx = canvas.getContext('2d');
 canvas.width = CONFIG.COLS * CONFIG.TILE;
 canvas.height = CONFIG.ROWS * CONFIG.TILE;
 
+// v5: stats panel (beside the canvas) and controls panel (under it) are
+// their own small canvases now, instead of being drawn on top of `canvas`
+// itself — see drawSideStatsPanel()/drawControlsPanel() further down.
+const statsCanvas = document.getElementById('statsCanvas');
+const statsCtx = statsCanvas.getContext('2d');
+statsCanvas.width = Math.round(288 * CONFIG.HUD_PANEL_SCALE);
+statsCanvas.height = Math.round(160 * CONFIG.HUD_PANEL_SCALE);
+
+const controlsCanvas = document.getElementById('controlsCanvas');
+const controlsCtx = controlsCanvas.getContext('2d');
+controlsCanvas.width = CONFIG.CONTROLS_PANEL_W;
+controlsCanvas.height = CONFIG.CONTROLS_PANEL_H;
+
 const HUD_FONT = `"Press Start 2P", "Courier New", monospace`;
 
 
@@ -192,10 +224,15 @@ const ASSET_SOURCES = {
   // v3
   serverRack: 'assets/sprites/server_rack.png',
   fireSheet: 'assets/sprites/fire_spritesheet.png',
-  walkingSprite: 'assets/sprites/walking_sprite.png',
 
   // v4
   shantanuSprite: 'assets/sprites/shantanu_sprite.png',
+
+  // v5: walking_sprite_v2.png replaces the v3 walking_sprite.png (see the
+  // CONFIG.DIRECTION_ROWS comment above for why). burnedServerRack is new —
+  // a dedicated charred-rack graphic instead of a grayscale filter.
+  walkingSprite: 'assets/sprites/walking_sprite_v2.png',
+  burnedServerRack: 'assets/sprites/burned_server_rack.png',
 };
 
 const ASSETS = {};
@@ -372,15 +409,24 @@ const FIRE_DRAW_SIZE = {
   ),
 };
 
-// walking_sprite.png is 944x1133 in a 4x4 grid -> each source cell is
-// 236 x 283.25. Drawn scaled down to PLAYER_SPRITE_W wide, same aspect ratio.
-const PLAYER_CELL = { w: 944 / 4, h: 1133 / 4 };
+// v5: walking_sprite_v2.png is 992x1132 in a 4x4 grid -> each source cell is
+// exactly 248x283. Drawn scaled up to PLAYER_SPRITE_W wide, same aspect ratio.
+const PLAYER_CELL = { w: 992 / 4, h: 1132 / 4 };
 const PLAYER_SPRITE_H = Math.round(CONFIG.PLAYER_SPRITE_W * (PLAYER_CELL.h / PLAYER_CELL.w));
 
-// v4: shantanu_sprite.png is the same 944x1133, 4x4-grid sheet convention as
-// walking_sprite.png, so it reuses PLAYER_CELL's slicing geometry and
-// CONFIG.DIRECTION_ROWS — only the drawn size differs.
-const SHANTANU_SPRITE_H = Math.round(CONFIG.SHANTANU_SPRITE_W * (PLAYER_CELL.h / PLAYER_CELL.w));
+// shantanu_sprite.png is its own, unchanged 944x1133 sheet (236x283.25 per
+// cell) — v5 only replaced the player's sheet, so this stays separate from
+// PLAYER_CELL. He still shares CONFIG.DIRECTION_ROWS (same row convention),
+// and per the v5 brief his drawn size is now pinned to the player's, not its
+// own tunable — hence SHANTANU_SPRITE_W just mirrors PLAYER_SPRITE_W here
+// rather than living in CONFIG.
+const SHANTANU_CELL = { w: 944 / 4, h: 1133 / 4 };
+const SHANTANU_SPRITE_W = CONFIG.PLAYER_SPRITE_W;
+// Pinned to the player's exact height too (not derived from his own sheet's
+// aspect ratio, which is very slightly different) — the brief calls for the
+// same on-screen size for both, matching how burned_server_rack.png is also
+// stretched to fit its target footprint rather than keeping its own aspect.
+const SHANTANU_SPRITE_H = PLAYER_SPRITE_H;
 
 // Which way Shantanu faces while walking straight in from / back out to each
 // map edge (his in/out legs are a straight perpendicular line, so this is
@@ -460,8 +506,48 @@ document.getElementById('btnExit').addEventListener('click', () => {
   setTimeout(() => { exitFallbackMsg.hidden = false; }, 150);
 });
 
-// The mute/unmute button is `disabled` in the HTML, so it already can't be
-// clicked — no handler needed until there's actual game audio to gate it.
+/* -----------------------------------------------------------------------------
+   v5: AUDIO. Two plain <audio> elements (declared in index.html, not created
+   here) — a looping gameplay music track and Shantanu's one-shot alarm.
+   Both are gated by the mute button, which is now real (it was a disabled
+   stub through v4).
+----------------------------------------------------------------------------- */
+const gameplayMusicEl = document.getElementById('gameplayMusic');
+const shantanuAlarmEl = document.getElementById('shantanuAlarm');
+const btnMute = document.getElementById('btnMute');
+
+let soundMuted = false;
+
+function setMuted(muted) {
+  soundMuted = muted;
+  gameplayMusicEl.muted = muted;
+  shantanuAlarmEl.muted = muted;
+  btnMute.textContent = muted ? '🔇' : '🔊';
+}
+
+btnMute.addEventListener('click', () => setMuted(!soundMuted));
+
+// Gameplay music: starts when a run actually begins (startGame(), further
+// down), pauses whenever it isn't actively playing (win/lose or the Escape
+// pause menu), resumes on Continue. .play() here is always triggered by a
+// real click (Start Game / a map card / Continue), so autoplay restrictions
+// don't apply — no muted-attribute workaround needed like the old menu video.
+function playGameplayMusic() {
+  gameplayMusicEl.play().catch(() => {
+    // Ignore — e.g. the file isn't there yet.
+  });
+}
+
+function pauseGameplayMusic() {
+  gameplayMusicEl.pause();
+}
+
+// Shantanu's alarm: one-shot per event occurrence, played from the top each
+// time in case a previous play somehow hasn't finished.
+function playShantanuAlarm() {
+  shantanuAlarmEl.currentTime = 0;
+  shantanuAlarmEl.play().catch(() => {});
+}
 
 
 /* -----------------------------------------------------------------------------
@@ -625,7 +711,12 @@ function setPaused(paused) {
   if (!game) return;
   game.paused = paused;
   pauseOverlay.style.display = paused ? 'flex' : 'none';
-  if (paused) rollTaunt();
+  if (paused) {
+    rollTaunt();
+    pauseGameplayMusic();   // v5
+  } else {
+    playGameplayMusic();    // v5: resume on Continue
+  }
 }
 
 document.getElementById('btnContinue').addEventListener('click', () => setPaused(false));
@@ -634,6 +725,7 @@ document.getElementById('btnQuitToMenu').addEventListener('click', () => {
   // Ends the current run (no score is recorded — only WON/LOST do that,
   // unchanged from v2) and goes back to the main menu.
   pauseOverlay.style.display = 'none';
+  pauseGameplayMusic(); // v5
   game = null;
   showMenu();
 });
@@ -710,6 +802,8 @@ function startGame() {
       bubbleTimer: 0,
     },
   };
+
+  playGameplayMusic(); // v5: starts here, always triggered by a real click
 }
 
 
@@ -1040,6 +1134,8 @@ function updateShantanuTimer(dt) {
   s.moving = true;
   s.walkClock = 0;
   s.targetServerId = null;
+
+  playShantanuAlarm(); // v5: exactly once per occurrence, right as he appears
 }
 
 // Moves (x, y) toward (targetX, targetY) by at most maxDist, snapping
@@ -1166,12 +1262,14 @@ function checkEndConditions() {
   if (burnedDown >= CONFIG.MAX_BURNED_ALLOWED) {
     game.phase = PHASE.LOST;
     recordFinalScore(); // v2
+    pauseGameplayMusic(); // v5
     return;
   }
 
   if (game.elapsed >= CONFIG.SURVIVE_TIME && burning === 0) {
     game.phase = PHASE.WON;
     recordFinalScore(); // v2
+    pauseGameplayMusic(); // v5
   }
 }
 
@@ -1184,6 +1282,13 @@ function countByState(state) {
    CLIENT/UI LAYER: draw the state.
 ----------------------------------------------------------------------------- */
 function draw() {
+  // v5: these two are their own side canvases now, so they're drawn every
+  // frame regardless of game state — the stats panel just shows a "no run
+  // yet" placeholder before Start Game, and the controls panel is static
+  // reference info that's always relevant.
+  drawSideStatsPanel();
+  drawControlsPanel();
+
   if (!game) {
     // Menu is showing (pure DOM overlay) — just keep the canvas behind it a
     // plain brand-dark color so there's no flash of unstyled canvas.
@@ -1197,8 +1302,8 @@ function draw() {
   drawPlayer();
   drawShantanu();         // v4: only draws once he's actually active
   drawExtinguishBar();
-  drawStatsPanel();       // v2: replaces the old plain debug text
-  drawBurnScoreboard();   // v2: separate "X/3 SERVERS LOST" danger meter
+  drawBurnScoreboard();   // v2: separate "X/3 SERVERS LOST" danger meter — stays
+                          // on the main canvas as an in-the-moment overlay
   if (game.phase !== PHASE.PLAYING) drawEndScreen();
 }
 
@@ -1269,13 +1374,17 @@ function drawServers() {
 
     if (ASSETS.serverRack.loaded) {
       if (s.state === STATE.BURNED_DOWN) {
-        // "Charred" look: desaturate + darken the same sprite, then a low
-        // alpha dark overlay on top for extra soot.
-        ctx.filter = 'grayscale(1) brightness(0.35)';
-        ctx.drawImage(ASSETS.serverRack.img, rect.left, rect.top, rect.w, rect.h);
-        ctx.filter = 'none';
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
-        ctx.fillRect(rect.left, rect.top, rect.w, rect.h);
+        // v5: dedicated charred sprite, replacing the old grayscale-filter
+        // trick on the healthy rack. Stretched into the exact same rect the
+        // healthy/burning rack uses, so it lines up on the same tile even
+        // though the source art has a very different native aspect ratio.
+        if (ASSETS.burnedServerRack.loaded) {
+          ctx.drawImage(ASSETS.burnedServerRack.img, rect.left, rect.top, rect.w, rect.h);
+        } else {
+          // Asset not loaded yet — plain solid silhouette, same footprint.
+          ctx.fillStyle = COLORS.burnedDown;
+          ctx.fillRect(rect.left, rect.top, rect.w, rect.h);
+        }
       } else {
         // OK and BURNING both show the normal rack — fire is drawn on top.
         ctx.drawImage(ASSETS.serverRack.img, rect.left, rect.top, rect.w, rect.h);
@@ -1379,7 +1488,7 @@ function drawShantanu() {
   const s = game.shantanu;
   if (s.state === 'IDLE') return;
 
-  const w = CONFIG.SHANTANU_SPRITE_W;
+  const w = SHANTANU_SPRITE_W;
   const h = SHANTANU_SPRITE_H;
   const drawX = s.x - w / 2;
   const drawY = s.y - h / 2;
@@ -1391,7 +1500,7 @@ function drawShantanu() {
       : 0;
     ctx.drawImage(
       ASSETS.shantanuSprite.img,
-      frame * PLAYER_CELL.w, row * PLAYER_CELL.h, PLAYER_CELL.w, PLAYER_CELL.h,
+      frame * SHANTANU_CELL.w, row * SHANTANU_CELL.h, SHANTANU_CELL.w, SHANTANU_CELL.h,
       drawX, drawY, w, h
     );
   } else {
@@ -1468,27 +1577,34 @@ function drawExtinguishBar() {
   ctx.fillRect(x, y, w * ratio, h);
 }
 
-// --- v2: stats HUD panel -----------------------------------------------------
-// Replaces v1's raw debug text with stat_panel_frame.png (or a plain fallback
-// panel) plus a pixel-font readout of the numbers players actually care about.
-const HUD_PANEL = {
-  x: 12,
-  y: 12,
-  w: 288 * CONFIG.HUD_PANEL_SCALE,
-  h: 160 * CONFIG.HUD_PANEL_SCALE,
-};
-
-function drawStatsPanel() {
-  const { x, y, w, h } = HUD_PANEL;
+// --- v2/v5: stats side panel --------------------------------------------------
+// v2 drew this as a small box in the corner of the game canvas; v5 moves it
+// to its own dedicated canvas beside the game (see statsCanvas, above), made
+// bigger (HUD_PANEL_SCALE 0.55 -> 1.25) with all its content centered.
+function drawSideStatsPanel() {
+  const w = statsCanvas.width;
+  const h = statsCanvas.height;
 
   if (ASSETS.statPanelFrame.loaded) {
-    ctx.drawImage(ASSETS.statPanelFrame.img, x, y, w, h);
+    statsCtx.clearRect(0, 0, w, h);
+    statsCtx.drawImage(ASSETS.statPanelFrame.img, 0, 0, w, h);
   } else {
-    ctx.fillStyle = 'rgba(45, 52, 71, 0.9)'; // bgMid, translucent
-    ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = COLORS.accent;
-    ctx.lineWidth = 2;
-    ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+    statsCtx.fillStyle = 'rgba(45, 52, 71, 0.9)'; // bgMid, translucent
+    statsCtx.fillRect(0, 0, w, h);
+    statsCtx.strokeStyle = COLORS.accent;
+    statsCtx.lineWidth = 2;
+    statsCtx.strokeRect(1, 1, w - 2, h - 2);
+  }
+
+  statsCtx.textAlign = 'center';
+
+  if (!game) {
+    // No run started yet — a friendly placeholder instead of all-zero stats.
+    statsCtx.fillStyle = COLORS.grey;
+    statsCtx.font = `10px ${HUD_FONT}`;
+    statsCtx.fillText('START A GAME', w / 2, h / 2 - 8);
+    statsCtx.fillText('TO SEE STATS', w / 2, h / 2 + 14);
+    return;
   }
 
   const lines = [
@@ -1499,20 +1615,61 @@ function drawStatsPanel() {
     `SCORE ${Math.floor(game.score)}`,
   ];
 
-  ctx.fillStyle = COLORS.cream;
-  ctx.font = `8px ${HUD_FONT}`;
-  ctx.textAlign = 'left';
-  lines.forEach((line, i) => ctx.fillText(line, x + 10, y + 20 + i * 16));
+  statsCtx.fillStyle = COLORS.cream;
+  statsCtx.font = `13px ${HUD_FONT}`;
+  const startY = h / 2 - ((lines.length - 1) / 2) * 24;
+  lines.forEach((line, i) => statsCtx.fillText(line, w / 2, startY + i * 24));
 
-  // Small secondary debug line (not part of the styled panel) so the fire
-  // ramp and extinguish timing are still visible while tuning CONFIG.
-  ctx.fillStyle = COLORS.grey;
-  ctx.font = '10px monospace';
-  ctx.fillText(
+  // Small secondary debug line so the fire ramp/extinguish timing are still
+  // visible while tuning CONFIG — now just the last line in the same panel
+  // instead of floating below the old in-canvas box.
+  statsCtx.fillStyle = COLORS.grey;
+  statsCtx.font = '11px monospace';
+  statsCtx.fillText(
     `ignite every ${currentIgniteInterval().toFixed(2)}s (next in ${Math.max(0, game.igniteTimer).toFixed(1)}s)`,
-    x,
-    y + h + 14
+    w / 2,
+    startY + lines.length * 24 + 6
   );
+}
+
+// --- v5: controls / how-to-play panel -----------------------------------------
+// Static reference info, same stat_panel_frame.png HUD treatment, sitting
+// under the game canvas. Content never changes, but it's cheap enough to
+// just redraw every frame alongside everything else (and it means it
+// upgrades from the fallback box to the real frame art automatically the
+// moment stat_panel_frame.png finishes loading, with no extra plumbing).
+const CONTROLS_LINES = [
+  '↑↓←→  Move',
+  'SPACE (hold near fire)  Extinguish',
+  'ESC  Pause',
+  'Lose if 3 servers burn down',
+];
+
+function drawControlsPanel() {
+  const w = controlsCanvas.width;
+  const h = controlsCanvas.height;
+
+  if (ASSETS.statPanelFrame.loaded) {
+    controlsCtx.clearRect(0, 0, w, h);
+    controlsCtx.drawImage(ASSETS.statPanelFrame.img, 0, 0, w, h);
+  } else {
+    controlsCtx.fillStyle = 'rgba(45, 52, 71, 0.9)';
+    controlsCtx.fillRect(0, 0, w, h);
+    controlsCtx.strokeStyle = COLORS.accent;
+    controlsCtx.lineWidth = 2;
+    controlsCtx.strokeRect(1, 1, w - 2, h - 2);
+  }
+
+  controlsCtx.textAlign = 'center';
+
+  controlsCtx.fillStyle = COLORS.accent;
+  controlsCtx.font = `13px ${HUD_FONT}`;
+  controlsCtx.fillText('HOW TO PLAY', w / 2, 34);
+
+  controlsCtx.fillStyle = COLORS.cream;
+  controlsCtx.font = '13px monospace';
+  const startY = 66;
+  CONTROLS_LINES.forEach((line, i) => controlsCtx.fillText(line, w / 2, startY + i * 22));
 }
 
 // --- v2: burn scoreboard / danger meter --------------------------------------
