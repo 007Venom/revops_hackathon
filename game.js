@@ -176,8 +176,8 @@ const CONFIG = {
 ----------------------------------------------------------------------------- */
 const LEVELS = [
   { level: 1, minScore: 0,  fireInterval: 8, burnTime: 14, speedMultiplier: 1.00, shantanuEnabled: false },
-  { level: 2, minScore: 5, fireInterval: 7, burnTime: 14, speedMultiplier: 1.00, shantanuEnabled: true  },
-  { level: 3, minScore: 10, fireInterval: 6, burnTime: 12, speedMultiplier: 1.25, shantanuEnabled: true  },
+  { level: 2, minScore: 3, fireInterval: 7, burnTime: 14, speedMultiplier: 1.00, shantanuEnabled: true  },
+  { level: 3, minScore: 7, fireInterval: 6, burnTime: 12, speedMultiplier: 1.25, shantanuEnabled: true  },
   { level: 4, minScore: 15, fireInterval: 5,  burnTime: 10, speedMultiplier: 1.50, shantanuEnabled: true  },
   { level: 5, minScore: 20, fireInterval: 4,  burnTime: 8,  speedMultiplier: 1.75, shantanuEnabled: true  },
 ];
