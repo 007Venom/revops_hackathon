@@ -4,16 +4,60 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="robots" content="noindex, nofollow">
-  <title>RevOps Firefighter — v1</title>
-  <link rel="stylesheet" href="style.css?v=001">
+  <title>RevOps Firefighter — v2</title>
+
+  <!-- Pixel-style display font for the in-game HUD. Google Fonts, loaded via
+       CDN link tag per project rules (Section 9) — no build step involved.
+       If this request is blocked or slow, ctx.font's fallback list (see
+       game.js) quietly uses a bold monospace instead. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="style.css?v=002">
 </head>
 <body>
-  <!-- CLIENT/UI LAYER: just a canvas and a one-line control hint. -->
-  <h1>RevOps Firefighter <span class="version">v1 — logic only</span></h1>
-  <canvas id="game" width="800" height="560"></canvas>
+  <!-- CLIENT/UI LAYER -->
+  <h1>RevOps Firefighter <span class="version">v2</span></h1>
+
+  <div class="game-wrap">
+    <canvas id="game" width="800" height="560"></canvas>
+
+    <!-- Main menu overlay. Pure HTML/CSS on top of the canvas — shown before
+         the first game starts, hidden for the rest of the session once
+         "Start Game" is clicked. This is DOM, not canvas, so the browser
+         handles the background image / badge loading and button clicks for
+         us without any extra preloading code. -->
+    <div id="menuOverlay" class="menu-overlay">
+      <div class="menu-panel">
+        <img class="menu-badge" src="assets/images/personio_pixel_badge.png" alt="Personio badge">
+        <h2 class="menu-title">RevOps Firefighter</h2>
+        <p class="menu-subtitle">Keep the revenue stack alive.</p>
+
+        <div class="menu-buttons">
+          <button id="btnStart" class="menu-btn menu-btn--primary">Start Game</button>
+          <button id="btnExit" class="menu-btn">Exit Game</button>
+        </div>
+
+        <div class="menu-buttons menu-buttons--secondary">
+          <button id="btnChangeMap" class="menu-btn menu-btn--ghost" disabled title="Coming soon">
+            Change Map
+          </button>
+          <button id="btnMute" class="menu-btn menu-btn--ghost menu-btn--icon" disabled title="Coming soon">
+            🔊
+          </button>
+        </div>
+
+        <p id="exitFallbackMsg" class="menu-fallback-msg" hidden>
+          Your browser won't let a page close a tab it didn't open — you can close this tab yourself.
+        </p>
+      </div>
+    </div>
+  </div>
+
   <p class="hint">Arrow keys = move &nbsp;·&nbsp; hold SPACE next to a burning server = extinguish &nbsp;·&nbsp; R = restart</p>
 
-  <!-- LOGIC LAYER lives in game.js -->
-  <script src="game.js?v=001"></script>
+  <!-- LOGIC LAYER -->
+  <script src="game.js?v=002"></script>
 </body>
 </html>

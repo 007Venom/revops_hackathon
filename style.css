@@ -1,9 +1,21 @@
-/* CLIENT/UI LAYER — deliberately minimal for v1. Polish comes in v2. */
+/* CLIENT/UI LAYER
+   v2: brand palette as CSS variables, main menu overlay, button styles.
+   Gameplay itself is still drawn on canvas — see game.js. */
+
+:root {
+  --color-bg-dark: #191E2B;
+  --color-bg-mid: #2D3447;
+  --color-accent: #FF6A4A;
+  --color-accent-dark: #D64F33;
+  --color-cream: #F7F4EF;
+  --color-grey: #C6C6C6;
+}
+
 body {
   margin: 0;
   padding: 24px;
-  background: #1a1a1a;
-  color: #dddddd;
+  background: var(--color-bg-dark);
+  color: var(--color-cream);
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   display: flex;
   flex-direction: column;
@@ -18,19 +30,150 @@ h1 {
 }
 
 .version {
-  color: #888888;
+  color: var(--color-grey);
   font-weight: 400;
 }
 
+.game-wrap {
+  position: relative;
+  width: 800px;
+  height: 560px;
+}
+
 canvas {
-  background: #2b2b2b;
+  background: var(--color-bg-mid);
   border: 2px solid #444444;
-  /* Keep pixels crisp — we are drawing plain rectangles. */
   image-rendering: pixelated;
 }
 
 .hint {
   font-size: 12px;
-  color: #999999;
+  color: var(--color-grey);
   margin: 0;
+}
+
+
+/* -----------------------------------------------------------------------
+   Main menu overlay — sits exactly over the canvas until Start Game.
+----------------------------------------------------------------------- */
+.menu-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  /* title_bg_wash.png provided as the backdrop; the dark brand color
+     underneath is the fallback if the image hasn't been added yet. */
+  background-color: var(--color-bg-dark);
+  background-image:
+    linear-gradient(rgba(25, 30, 43, 0.55), rgba(25, 30, 43, 0.75)),
+    url("assets/images/title_bg_wash.png");
+  background-size: cover;
+  background-position: center;
+
+  border: 2px solid #444444;
+}
+
+.menu-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 32px;
+}
+
+.menu-badge {
+  width: 120px;
+  height: 120px;
+  image-rendering: pixelated;
+  /* Until assets/images/personio_pixel_badge.png exists, the browser shows
+     its alt text here instead of a broken-image icon. */
+  font-size: 11px;
+  color: var(--color-grey);
+}
+
+.menu-title {
+  margin: 0;
+  font-size: 26px;
+  letter-spacing: 0.5px;
+  color: var(--color-cream);
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+
+.menu-subtitle {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--color-grey);
+}
+
+.menu-buttons {
+  display: flex;
+  gap: 12px;
+}
+
+.menu-buttons--secondary {
+  margin-top: 4px;
+}
+
+.menu-btn {
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 22px;
+  border-radius: 6px;
+  border: 2px solid var(--color-accent-dark);
+  background: var(--color-accent);
+  color: var(--color-bg-dark);
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.05s ease;
+}
+
+.menu-btn:hover:not(:disabled) {
+  background: var(--color-accent-dark);
+}
+
+.menu-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.menu-btn--primary {
+  /* Same visual treatment as the default — kept as its own class so we can
+     restyle "primary" independently later without touching Exit. */
+}
+
+.menu-btn:not(.menu-btn--primary):not(.menu-btn--ghost) {
+  background: transparent;
+  color: var(--color-cream);
+  border-color: var(--color-grey);
+}
+.menu-btn:not(.menu-btn--primary):not(.menu-btn--ghost):hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.menu-btn--ghost {
+  background: transparent;
+  color: var(--color-grey);
+  border-color: #555b6e;
+}
+
+.menu-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  background: transparent;
+  color: var(--color-grey);
+  border-color: #555b6e;
+}
+
+.menu-btn--icon {
+  padding: 10px 16px;
+  font-size: 16px;
+}
+
+.menu-fallback-msg {
+  max-width: 280px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--color-grey);
+  margin: 4px 0 0;
 }
