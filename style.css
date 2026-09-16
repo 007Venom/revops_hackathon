@@ -254,3 +254,99 @@ canvas {
   text-align: center;
   line-height: 1.4;
 }
+
+
+/* -----------------------------------------------------------------------
+   v3.1: Map Select overlay — shown after "Start Game", before a run
+   actually begins. Same layered-over-canvas approach as the pause menu;
+   see MAPS + renderMapCards()/drawMapPreview() in game.js for the content.
+----------------------------------------------------------------------- */
+.map-select-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(25, 30, 43, 0.94);
+}
+
+.map-select-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 22px 26px;
+  max-width: 720px;
+}
+
+.map-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+  width: 100%;
+}
+
+.map-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  text-align: left;
+  font-family: inherit;
+  color: var(--color-cream);
+  background: var(--color-bg-mid);
+  border: 2px solid #555b6e;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.05s ease;
+}
+
+.map-card:hover {
+  border-color: var(--color-accent);
+}
+
+.map-card:active {
+  transform: translateY(1px);
+}
+
+.map-card canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 4px;
+  image-rendering: pixelated;
+}
+
+.map-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.map-card-name {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.map-diff {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.map-diff--easy   { background: #2f5d3a; color: #bff2c8; }
+.map-diff--medium { background: #5d4a1f; color: #f2d9a0; }
+.map-diff--hard   { background: #5d1f1f; color: #f2a0a0; }
+
+.map-card-tagline {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-grey);
+}

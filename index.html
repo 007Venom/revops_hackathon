@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
 
-  <link rel="stylesheet" href="style.css?v=003">
+  <link rel="stylesheet" href="style.css?v=004">
 </head>
 <body>
   <!-- CLIENT/UI LAYER -->
@@ -54,9 +54,6 @@
         </div>
 
         <div class="menu-buttons menu-buttons--secondary">
-          <button id="btnChangeMap" class="menu-btn menu-btn--ghost" disabled title="Coming soon">
-            Change Map
-          </button>
           <button id="btnMute" class="menu-btn menu-btn--ghost menu-btn--icon" disabled title="Coming soon">
             🔊
           </button>
@@ -65,6 +62,21 @@
         <p id="exitFallbackMsg" class="menu-fallback-msg" hidden>
           Your browser won't let a page close a tab it didn't open — you can close this tab yourself.
         </p>
+      </div>
+    </div>
+
+    <!-- v3.1: Map Select overlay. Shown after "Start Game" (and after
+         Quit-to-menu -> Start Game again) instead of jumping straight into a
+         run — the player picks one of the MAPS layouts defined in game.js,
+         which builds the actual card previews + click handlers. -->
+    <div id="mapSelectOverlay" class="map-select-overlay" style="display: none;">
+      <div class="map-select-panel">
+        <h2 class="menu-title">Choose Your Floor Plan</h2>
+        <p class="menu-subtitle">Same fires, different desks — pick a layout.</p>
+
+        <div id="mapCardsGrid" class="map-cards-grid"></div>
+
+        <button id="btnMapBack" class="menu-btn menu-btn--ghost">&larr; Back</button>
       </div>
     </div>
 
@@ -88,6 +100,6 @@
   <p class="hint">Arrow keys = move &nbsp;·&nbsp; hold SPACE next to a burning server = extinguish &nbsp;·&nbsp; ESC = pause &nbsp;·&nbsp; R = restart</p>
 
   <!-- LOGIC LAYER -->
-  <script src="game.js?v=003"></script>
+  <script src="game.js?v=004"></script>
 </body>
 </html>

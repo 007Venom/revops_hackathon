@@ -59,22 +59,11 @@ const CONFIG = {
                           // than MAX_BURNED_ALLOWED servers lost, and you win
 
   // --- v2: desks (solid obstacles) -------------------------------------------
-  // Fixed layout (not randomized) — top-left tile of each desk. Footprint is
-  // DESK_COLS x DESK_ROWS tiles, matching the ~128x80 desk_table.png asset.
+  // Footprint is DESK_COLS x DESK_ROWS tiles, matching the ~128x80
+  // desk_table.png asset. Per-map desk/partition tile lists now live in
+  // MAPS (v3.1, below) instead of being fixed here.
   DESK_COLS: 3,
   DESK_ROWS: 2,
-  DESK_TILES: [
-    { col: 2, row: 2 },
-    { col: 15, row: 2 },
-    { col: 2, row: 10 },
-    { col: 15, row: 10 },
-  ],
-
-  // --- v2: partitions (thin fixed wall pillars, also solid) ------------------
-  PARTITION_TILES: [
-    { col: 10, row: 3 }, { col: 10, row: 4 },
-    { col: 9, row: 9 }, { col: 9, row: 10 },
-  ],
 
   // --- v2: scoring ------------------------------------------------------------
   POINTS: {
@@ -207,61 +196,150 @@ for (const [key, src] of Object.entries(ASSET_SOURCES)) {
 
 
 /* -----------------------------------------------------------------------------
-   v2: fixed structural layout — walls, desks and partitions never move
-   between games, only the servers are re-randomized on restart. Computed
-   once up front from CONFIG.
+   v3.1: MAP SELECT. A "map" is just a different fixed desk/partition layout —
+   everything else (border walls, server randomization, fire/extinguish
+   rules) is unchanged. The player picks one from the map-select overlay
+   (shown after "Start Game", wired further down) before each new game.
+----------------------------------------------------------------------------- */
+const MAPS = [
+  {
+    id: 'open-floor',
+    name: 'Open Floor',
+    difficulty: 'Easy',
+    tagline: 'Four corner desks and two short partition walls around a mostly open center.',
+    deskTiles: [
+      { col: 2, row: 2 }, { col: 15, row: 2 },
+      { col: 2, row: 10 }, { col: 15, row: 10 },
+    ],
+    partitionTiles: [
+      { col: 10, row: 3 }, { col: 10, row: 4 },
+      { col: 9, row: 9 }, { col: 9, row: 10 },
+    ],
+  },
+  {
+    id: 'cubicle-rows',
+    name: 'Cubicle Rows',
+    difficulty: 'Medium',
+    tagline: 'Two long desk rows split the floor into lanes — plan a loop instead of cutting straight across.',
+    deskTiles: [
+      { col: 2, row: 4 }, { col: 7, row: 4 }, { col: 12, row: 4 },
+      { col: 2, row: 8 }, { col: 7, row: 8 }, { col: 12, row: 8 },
+    ],
+    partitionTiles: [
+      { col: 16, row: 4 }, { col: 16, row: 5 },
+      { col: 16, row: 8 }, { col: 16, row: 9 },
+    ],
+  },
+  {
+    id: 'server-ring',
+    name: 'Server Ring',
+    difficulty: 'Medium',
+    tagline: 'Desks and partitions form a loose ring around the center — commit to one of four gaps to get in or out.',
+    deskTiles: [
+      { col: 6, row: 3 }, { col: 12, row: 3 },
+      { col: 6, row: 9 }, { col: 12, row: 9 },
+    ],
+    // Shorter ring segments than the original design (2 tiles per side
+    // instead of 4) — with the 4 corner desks already blocking ~24 tiles,
+    // a full 16-tile ring left too little open floor for placeServers() to
+    // reliably find a valid, fully-reachable spot for all 10 servers.
+    partitionTiles: [
+      { col: 5, row: 6 }, { col: 5, row: 7 },
+      { col: 14, row: 6 }, { col: 14, row: 7 },
+      { col: 9, row: 2 }, { col: 10, row: 2 },
+      { col: 9, row: 11 }, { col: 10, row: 11 },
+    ],
+  },
+  {
+    id: 'maze-grid',
+    name: 'Maze Grid',
+    difficulty: 'Hard',
+    tagline: 'Nine staggered desk pods with partition stubs at every gap — narrow corridors, hard choices under fire.',
+    deskTiles: [
+      { col: 2, row: 2 }, { col: 8, row: 2 }, { col: 14, row: 2 },
+      { col: 2, row: 6 }, { col: 7, row: 6 }, { col: 14, row: 6 },
+      { col: 2, row: 10 }, { col: 8, row: 10 }, { col: 14, row: 10 },
+    ],
+    partitionTiles: [
+      { col: 5, row: 4 }, { col: 5, row: 8 },
+      { col: 11, row: 4 }, { col: 11, row: 8 },
+      { col: 17, row: 4 }, { col: 17, row: 8 },
+    ],
+  },
+];
+
+/* -----------------------------------------------------------------------------
+   v2/v3.1: fixed structural layout — walls, desks and partitions never move
+   during a game, only the servers are re-randomized on restart. v2 computed
+   this once from a single hardcoded CONFIG layout; v3.1 turns it into
+   buildMapLayout(), called whenever the player picks a map, so the same
+   plumbing works for any number of maps.
 ----------------------------------------------------------------------------- */
 const DESK_PIXEL_SIZE = {
   w: CONFIG.DESK_COLS * CONFIG.TILE,
   h: CONFIG.DESK_ROWS * CONFIG.TILE,
 };
 
-// Every tile a desk physically occupies (used to keep servers off them).
-const DESK_FOOTPRINT_TILES = CONFIG.DESK_TILES.flatMap((d) => {
-  const tiles = [];
-  for (let c = 0; c < CONFIG.DESK_COLS; c++) {
-    for (let r = 0; r < CONFIG.DESK_ROWS; r++) {
-      tiles.push({ col: d.col + c, row: d.row + r });
+function buildMapLayout(map) {
+  // Every tile a desk physically occupies (used to keep servers off them).
+  const deskFootprintTiles = map.deskTiles.flatMap((d) => {
+    const tiles = [];
+    for (let c = 0; c < CONFIG.DESK_COLS; c++) {
+      for (let r = 0; r < CONFIG.DESK_ROWS; r++) {
+        tiles.push({ col: d.col + c, row: d.row + r });
+      }
     }
+    return tiles;
+  });
+
+  // Border wall tiles (perimeter) + partitions, for drawing the wall texture.
+  const wallTiles = [];
+  for (let c = 0; c < CONFIG.COLS; c++) {
+    wallTiles.push({ col: c, row: 0 });
+    wallTiles.push({ col: c, row: CONFIG.ROWS - 1 });
   }
-  return tiles;
-});
+  for (let r = 1; r < CONFIG.ROWS - 1; r++) {
+    wallTiles.push({ col: 0, row: r });
+    wallTiles.push({ col: CONFIG.COLS - 1, row: r });
+  }
+  wallTiles.push(...map.partitionTiles);
 
-const PARTITION_TILES = CONFIG.PARTITION_TILES;
+  // Tile keys that block server placement / the reachability flood fill.
+  const structuralBlockedKeys = new Set(
+    [...deskFootprintTiles, ...map.partitionTiles].map((t) => `${t.col},${t.row}`)
+  );
 
-// Border wall tiles (perimeter) + partitions, for drawing the wall texture.
-const WALL_TILES = [];
-for (let c = 0; c < CONFIG.COLS; c++) {
-  WALL_TILES.push({ col: c, row: 0 });
-  WALL_TILES.push({ col: c, row: CONFIG.ROWS - 1 });
+  // Pixel AABBs for player collision (desks + partitions — the border wall
+  // is already handled by clamping the player's position, same as v1).
+  const solidObstacles = [
+    ...map.deskTiles.map((d) => ({
+      left: d.col * CONFIG.TILE,
+      top: d.row * CONFIG.TILE,
+      right: d.col * CONFIG.TILE + DESK_PIXEL_SIZE.w,
+      bottom: d.row * CONFIG.TILE + DESK_PIXEL_SIZE.h,
+    })),
+    ...map.partitionTiles.map((t) => ({
+      left: t.col * CONFIG.TILE,
+      top: t.row * CONFIG.TILE,
+      right: (t.col + 1) * CONFIG.TILE,
+      bottom: (t.row + 1) * CONFIG.TILE,
+    })),
+  ];
+
+  return {
+    deskTiles: map.deskTiles,
+    partitionTiles: map.partitionTiles,
+    deskFootprintTiles,
+    wallTiles,
+    structuralBlockedKeys,
+    solidObstacles,
+  };
 }
-for (let r = 1; r < CONFIG.ROWS - 1; r++) {
-  WALL_TILES.push({ col: 0, row: r });
-  WALL_TILES.push({ col: CONFIG.COLS - 1, row: r });
-}
-WALL_TILES.push(...PARTITION_TILES);
 
-// Tile keys that block server placement / the reachability flood fill.
-const STRUCTURAL_BLOCKED_KEYS = new Set(
-  [...DESK_FOOTPRINT_TILES, ...PARTITION_TILES].map((t) => `${t.col},${t.row}`)
-);
-
-// Pixel AABBs for player collision (desks + partitions — the border wall is
-// already handled by clamping the player's position, same as v1).
-const SOLID_OBSTACLES = [
-  ...CONFIG.DESK_TILES.map((d) => ({
-    left: d.col * CONFIG.TILE,
-    top: d.row * CONFIG.TILE,
-    right: d.col * CONFIG.TILE + DESK_PIXEL_SIZE.w,
-    bottom: d.row * CONFIG.TILE + DESK_PIXEL_SIZE.h,
-  })),
-  ...PARTITION_TILES.map((t) => ({
-    left: t.col * CONFIG.TILE,
-    top: t.row * CONFIG.TILE,
-    right: (t.col + 1) * CONFIG.TILE,
-    bottom: (t.row + 1) * CONFIG.TILE,
-  })),
-];
+// Defaults to the first map so the game stays playable even if startGame()
+// somehow runs before a map is picked — the real path is always through
+// chooseMap() from the map-select overlay, wired further down.
+let activeMap = buildMapLayout(MAPS[0]);
 
 /* -----------------------------------------------------------------------------
    v3: sprite sheet geometry, derived from the source image dimensions given
@@ -352,7 +430,7 @@ function hideMenu() {
 
 document.getElementById('btnStart').addEventListener('click', () => {
   hideMenu();
-  startGame();
+  showMapSelect();
 });
 
 document.getElementById('btnExit').addEventListener('click', () => {
@@ -362,12 +440,110 @@ document.getElementById('btnExit').addEventListener('click', () => {
   setTimeout(() => { exitFallbackMsg.hidden = false; }, 150);
 });
 
-// "Change Map" and the mute/unmute button are `disabled` in the HTML, so
-// they already can't be clicked — no handlers needed until they do something.
+// The mute/unmute button is `disabled` in the HTML, so it already can't be
+// clicked — no handler needed until it does something.
 // NOTE for later: once the mute toggle is real, this is where to gate
 // unmuting the menu video — only turn sound on if the toggle is ON AND it
 // happens after a user gesture (autoplay policies block unmuted audio
 // otherwise). For now the video stays hard-muted regardless.
+
+
+/* -----------------------------------------------------------------------------
+   v3.1: MAP SELECT overlay wiring. Shown after "Start Game" instead of
+   jumping straight into a run — the player picks one of MAPS (above), then
+   startGame() runs against whichever layout they chose. There's no separate
+   "Change Map" button on the main menu; picking a map is just step two of
+   starting a new game every time (including after Quit-to-menu).
+----------------------------------------------------------------------------- */
+const mapSelectOverlay = document.getElementById('mapSelectOverlay');
+const mapCardsGrid = document.getElementById('mapCardsGrid');
+
+function showMapSelect() {
+  renderMapCards();
+  mapSelectOverlay.style.display = 'flex';
+}
+
+function hideMapSelect() {
+  mapSelectOverlay.style.display = 'none';
+}
+
+document.getElementById('btnMapBack').addEventListener('click', () => {
+  hideMapSelect();
+  showMenu();
+});
+
+// Rebuilt fresh each time the overlay opens — four cards is cheap enough
+// that there's no need to cache/diff them.
+function renderMapCards() {
+  mapCardsGrid.innerHTML = '';
+
+  MAPS.forEach((map) => {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'map-card';
+    card.innerHTML = `
+      <canvas width="${CONFIG.COLS * MAP_PREVIEW_TILE_PX}" height="${CONFIG.ROWS * MAP_PREVIEW_TILE_PX}"></canvas>
+      <div class="map-card-head">
+        <p class="map-card-name">${map.name}</p>
+        <span class="map-diff map-diff--${map.difficulty.toLowerCase()}">${map.difficulty}</span>
+      </div>
+      <p class="map-card-tagline">${map.tagline}</p>
+    `;
+    card.addEventListener('click', () => chooseMap(map));
+
+    mapCardsGrid.appendChild(card);
+    drawMapPreview(card.querySelector('canvas'), map);
+  });
+}
+
+// Small schematic preview drawn with the same colors the real room uses
+// (see COLORS), so each card is an accurate "here's what you'll see", not a
+// separate mockup that could drift out of sync with the real rendering.
+const MAP_PREVIEW_TILE_PX = 10;
+
+function drawMapPreview(canvas, map) {
+  const pctx = canvas.getContext('2d');
+  const t = MAP_PREVIEW_TILE_PX;
+
+  pctx.fillStyle = COLORS.bgDark;
+  pctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Border wall.
+  pctx.fillStyle = COLORS.bgMid;
+  for (let c = 0; c < CONFIG.COLS; c++) {
+    pctx.fillRect(c * t, 0, t, t);
+    pctx.fillRect(c * t, (CONFIG.ROWS - 1) * t, t, t);
+  }
+  for (let r = 1; r < CONFIG.ROWS - 1; r++) {
+    pctx.fillRect(0, r * t, t, t);
+    pctx.fillRect((CONFIG.COLS - 1) * t, r * t, t, t);
+  }
+
+  // Partitions (same fill as the wall — that's how they render in-game too).
+  for (const p of map.partitionTiles) {
+    pctx.fillRect(p.col * t, p.row * t, t, t);
+  }
+
+  // Desks.
+  pctx.fillStyle = COLORS.deskFallback;
+  for (const d of map.deskTiles) {
+    pctx.fillRect(d.col * t, d.row * t, CONFIG.DESK_COLS * t, CONFIG.DESK_ROWS * t);
+  }
+
+  // Spawn marker — always the grid center, same tile startGame() uses.
+  const spawnCol = Math.floor(CONFIG.COLS / 2);
+  const spawnRow = Math.floor(CONFIG.ROWS / 2);
+  pctx.fillStyle = COLORS.player;
+  pctx.beginPath();
+  pctx.arc((spawnCol + 0.5) * t, (spawnRow + 0.5) * t, t * 0.35, 0, Math.PI * 2);
+  pctx.fill();
+}
+
+function chooseMap(map) {
+  activeMap = buildMapLayout(map);
+  hideMapSelect();
+  startGame();
+}
 
 
 /* -----------------------------------------------------------------------------
@@ -500,8 +676,8 @@ function tryPlaceServers(spawnTile) {
       if (tooCloseToServer) continue;
 
       // v2: also keep clear of desks and partitions.
-      if (nearAnyTile(col, row, DESK_FOOTPRINT_TILES, CONFIG.MIN_SERVER_GAP)) continue;
-      if (nearAnyTile(col, row, PARTITION_TILES, CONFIG.MIN_SERVER_GAP)) continue;
+      if (nearAnyTile(col, row, activeMap.deskFootprintTiles, CONFIG.MIN_SERVER_GAP)) continue;
+      if (nearAnyTile(col, row, activeMap.partitionTiles, CONFIG.MIN_SERVER_GAP)) continue;
 
       servers.push(makeServer(i, col, row));
       placed = true;
@@ -533,7 +709,7 @@ function makeServer(id, col, row) {
 // partitions all block it), then confirm every server has at least one
 // reachable tile next to it.
 function allServersReachable(servers, spawnTile) {
-  const blocked = new Set(STRUCTURAL_BLOCKED_KEYS);
+  const blocked = new Set(activeMap.structuralBlockedKeys);
   for (const s of servers) blocked.add(`${s.col},${s.row}`);
 
   const seen = new Set([`${spawnTile.col},${spawnTile.row}`]);
@@ -624,7 +800,7 @@ function updatePlayer(dt) {
 
 function collidesWithObstacles(x, y, half) {
   const left = x - half, right = x + half, top = y - half, bottom = y + half;
-  return SOLID_OBSTACLES.some(
+  return activeMap.solidObstacles.some(
     (o) => left < o.right && right > o.left && top < o.bottom && bottom > o.top
   );
 }
@@ -775,7 +951,7 @@ function drawRoom() {
   }
 
   // Walls: border + partitions, drawn as individual textured tiles.
-  for (const t of WALL_TILES) {
+  for (const t of activeMap.wallTiles) {
     const x = t.col * CONFIG.TILE;
     const y = t.row * CONFIG.TILE;
     if (ASSETS.wallTile.loaded) {
@@ -790,7 +966,7 @@ function drawRoom() {
 }
 
 function drawDesks() {
-  for (const d of CONFIG.DESK_TILES) {
+  for (const d of activeMap.deskTiles) {
     const x = d.col * CONFIG.TILE;
     const y = d.row * CONFIG.TILE;
 
