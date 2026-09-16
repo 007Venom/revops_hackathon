@@ -1,19 +1,21 @@
 /* =============================================================================
-   RevOps Firefighter — v7
+   RevOps Firefighter — v8
    =============================================================================
    v1 was logic-only rectangles. v2 added textures/menu/HUD/scoring. v3 added
    sprites/video/pause-menu (v3.1 map select, v4 balance + the Shantanu boss
    event, v4.1/v4.2 cleanup + a GIF menu background, v5 sprite/audio/HUD
-   polish, v6/v6 graphics+sound follow-ups). v7 adds:
-     - progressive difficulty: a score-driven LEVELS table replaces the flat
-       ignition-interval / burn-down-timer / player-speed constants and the
-       old hardcoded Shantanu score threshold
-     - a brief "LEVEL N REACHED" banner on every level-up
-     - the survive-time win condition is gone — this is endless-survival now,
-       the only end state is the original LOSE — replaced with a count-up
-       play-time stopwatch
-     - a new game-over final score (extinguished × seconds played) that
-       drives the session leaderboard, plus the game-over flavor line
+   polish, v6/v6 graphics+sound follow-ups, v7 progressive difficulty). v8 is
+   bug fixes + sizing only, no new features:
+     - servers now validate their full rendered sprite bounding box (not just
+       tile/grid distance) against the walls and against each other, with a
+       small pixel buffer, so racks can no longer visually poke into the top
+       wall or touch/overlap a neighboring rack
+     - explicit console logging around the Shantanu 10-point unlock and the
+       30s timer arming that follows it, for easy runtime verification
+       (the arming logic itself was already correct on inspection)
+     - desk_table.png and wall_tile.png are drawn at 60% of their old
+       on-screen size, centered in the tile(s) they occupy, with matching
+       (also shrunk) collision boxes
 
    Architecture is unchanged:
      - DATA LAYER      : CONFIG + LEVELS + the `game` state object.
@@ -24,8 +26,8 @@
                          one.
 
    Each version's additions are labelled "v2:" / "v3:" / "v3.1:" / "v4:" /
-   "v5:" / "v7:" in comments so the diff against the previous version is easy
-   to follow.
+   "v5:" / "v7:" / "v8:" in comments so the diff against the previous version
+   is easy to follow.
 ============================================================================= */
 
 
@@ -41,9 +43,16 @@ const CONFIG = {
   // --- Servers --------------------------------------------------------------
   SERVER_COUNT: 10,       // how many servers are placed at game start
   SERVER_SIZE: 32,        // drawn size of a server (fits inside a 40px tile)
-  MIN_SERVER_GAP: 2,      // min distance in tiles between servers/obstacles
-                          // (Chebyshev). This is what guarantees the room
-                          // stays walkable and nothing spawns hugging a wall.
+  MIN_SERVER_GAP: 2,      // min distance in tiles between servers/desks/
+                          // partitions (Chebyshev). This is what guarantees
+                          // the room stays walkable.
+  // v8: server-vs-wall and server-vs-server placement now also validate the
+  // server rack sprite's actual rendered bounding box (see getServerBBoxAt()
+  // below), not just this tile-based gap — SERVER_WALL_MARGIN/
+  // SERVER_MIN_PIXEL_GAP are the extra pixel clearance required on top of
+  // that box.
+  SERVER_WALL_MARGIN: 6,     // min px between a server's sprite box and any wall
+  SERVER_MIN_PIXEL_GAP: 6,   // min px between any two servers' sprite boxes
   MAX_BURNED_ALLOWED: 3,  // you lose when this many servers are BURNED_DOWN
 
   // --- Player ---------------------------------------------------------------
@@ -72,6 +81,13 @@ const CONFIG = {
   // MAPS (v3.1, below) instead of being fixed here.
   DESK_COLS: 3,
   DESK_ROWS: 2,
+  // v8: desk_table.png and wall_tile.png are now drawn at 60% of their old
+  // on-screen size (a 40% reduction), scaled down around the center of the
+  // tile(s) they occupy. Collision boxes for desks/partitions are derived
+  // from these same scaled rects (see DESK_VISUAL_SIZE / WALL_VISUAL_SIZE,
+  // below buildMapLayout) so hitboxes always match what's drawn.
+  DESK_VISUAL_SCALE: 0.6,
+  WALL_VISUAL_SCALE: 0.6,
 
   // --- v4: scoring (replaces the v2 formula) -----------------------------------
   // Deliberately just one rule now: no time bonus, no burn-down penalty.
@@ -146,10 +162,10 @@ const CONFIG = {
    just reads getCurrentLevel(game.score) — retune by editing this table.
 ----------------------------------------------------------------------------- */
 const LEVELS = [
-  { level: 1, minScore: 0,  fireInterval: 12, burnTime: 14, speedMultiplier: 1.00, shantanuEnabled: false },
-  { level: 2, minScore: 10, fireInterval: 12, burnTime: 14, speedMultiplier: 1.00, shantanuEnabled: true  },
-  { level: 3, minScore: 20, fireInterval: 10, burnTime: 12, speedMultiplier: 1.25, shantanuEnabled: true  },
-  { level: 4, minScore: 30, fireInterval: 8,  burnTime: 10, speedMultiplier: 1.50, shantanuEnabled: true  },
+  { level: 1, minScore: 0,  fireInterval: 8, burnTime: 14, speedMultiplier: 1.00, shantanuEnabled: false },
+  { level: 2, minScore: 10, fireInterval: 8, burnTime: 14, speedMultiplier: 1.00, shantanuEnabled: true  },
+  { level: 3, minScore: 20, fireInterval: 7, burnTime: 12, speedMultiplier: 1.25, shantanuEnabled: true  },
+  { level: 4, minScore: 30, fireInterval: 6,  burnTime: 10, speedMultiplier: 1.50, shantanuEnabled: true  },
   { level: 5, minScore: 40, fireInterval: 6,  burnTime: 8,  speedMultiplier: 1.75, shantanuEnabled: true  },
 ];
 
@@ -359,6 +375,22 @@ const DESK_PIXEL_SIZE = {
   h: CONFIG.DESK_ROWS * CONFIG.TILE,
 };
 
+// v8: the actual drawn (and collided-with) size of a desk/wall tile — 60% of
+// the old full-footprint/full-tile size, centered within it. Centering
+// (rather than anchoring at the tile's top-left) keeps every desk/wall tile
+// still lined up on the same grid position, just visually smaller with an
+// even gap of empty floor around it.
+const DESK_VISUAL_SIZE = {
+  w: DESK_PIXEL_SIZE.w * CONFIG.DESK_VISUAL_SCALE,
+  h: DESK_PIXEL_SIZE.h * CONFIG.DESK_VISUAL_SCALE,
+};
+const DESK_VISUAL_OFFSET = {
+  x: (DESK_PIXEL_SIZE.w - DESK_VISUAL_SIZE.w) / 2,
+  y: (DESK_PIXEL_SIZE.h - DESK_VISUAL_SIZE.h) / 2,
+};
+const WALL_VISUAL_SIZE = CONFIG.TILE * CONFIG.WALL_VISUAL_SCALE;
+const WALL_VISUAL_OFFSET = (CONFIG.TILE - WALL_VISUAL_SIZE) / 2;
+
 function buildMapLayout(map) {
   // Every tile a desk physically occupies (used to keep servers off them).
   const deskFootprintTiles = map.deskTiles.flatMap((d) => {
@@ -389,19 +421,22 @@ function buildMapLayout(map) {
   );
 
   // Pixel AABBs for player collision (desks + partitions — the border wall
-  // is already handled by clamping the player's position, same as v1).
+  // is already handled by clamping the player's position, same as v1). v8:
+  // sized to match the smaller drawn desk/wall visuals (DESK_VISUAL_SIZE /
+  // WALL_VISUAL_SIZE), not the old full-tile footprint, so there's no
+  // invisible oversized hitbox left over from the pre-v8 sizes.
   const solidObstacles = [
     ...map.deskTiles.map((d) => ({
-      left: d.col * CONFIG.TILE,
-      top: d.row * CONFIG.TILE,
-      right: d.col * CONFIG.TILE + DESK_PIXEL_SIZE.w,
-      bottom: d.row * CONFIG.TILE + DESK_PIXEL_SIZE.h,
+      left: d.col * CONFIG.TILE + DESK_VISUAL_OFFSET.x,
+      top: d.row * CONFIG.TILE + DESK_VISUAL_OFFSET.y,
+      right: d.col * CONFIG.TILE + DESK_VISUAL_OFFSET.x + DESK_VISUAL_SIZE.w,
+      bottom: d.row * CONFIG.TILE + DESK_VISUAL_OFFSET.y + DESK_VISUAL_SIZE.h,
     })),
     ...map.partitionTiles.map((t) => ({
-      left: t.col * CONFIG.TILE,
-      top: t.row * CONFIG.TILE,
-      right: (t.col + 1) * CONFIG.TILE,
-      bottom: (t.row + 1) * CONFIG.TILE,
+      left: t.col * CONFIG.TILE + WALL_VISUAL_OFFSET,
+      top: t.row * CONFIG.TILE + WALL_VISUAL_OFFSET,
+      right: t.col * CONFIG.TILE + WALL_VISUAL_OFFSET + WALL_VISUAL_SIZE,
+      bottom: t.row * CONFIG.TILE + WALL_VISUAL_OFFSET + WALL_VISUAL_SIZE,
     })),
   ];
 
@@ -662,22 +697,37 @@ function drawMapPreview(canvas, map) {
   }
   wallTiles.push(...map.partitionTiles);
 
+  // v8: previewed at the same 60% wall scale as the real map, centered in
+  // the tile, so the card matches actual gameplay.
+  const wallVisual = t * CONFIG.WALL_VISUAL_SCALE;
+  const wallOffset = (t - wallVisual) / 2;
   for (const w of wallTiles) {
+    const wx = w.col * t + wallOffset;
+    const wy = w.row * t + wallOffset;
     if (ASSETS.wallTile.loaded) {
-      pctx.drawImage(ASSETS.wallTile.img, w.col * t, w.row * t, t, t);
+      pctx.drawImage(ASSETS.wallTile.img, wx, wy, wallVisual, wallVisual);
     } else {
       pctx.fillStyle = COLORS.bgMid;
-      pctx.fillRect(w.col * t, w.row * t, t, t);
+      pctx.fillRect(wx, wy, wallVisual, wallVisual);
     }
   }
 
-  // Desks, stretched to their 3x2 footprint.
+  // Desks, stretched to their 3x2 footprint — v8: at the same 60% scale as
+  // the real map, centered in that footprint.
+  const deskFootprintW = CONFIG.DESK_COLS * t;
+  const deskFootprintH = CONFIG.DESK_ROWS * t;
+  const deskVisualW = deskFootprintW * CONFIG.DESK_VISUAL_SCALE;
+  const deskVisualH = deskFootprintH * CONFIG.DESK_VISUAL_SCALE;
+  const deskOffsetX = (deskFootprintW - deskVisualW) / 2;
+  const deskOffsetY = (deskFootprintH - deskVisualH) / 2;
   for (const d of map.deskTiles) {
+    const dx = d.col * t + deskOffsetX;
+    const dy = d.row * t + deskOffsetY;
     if (ASSETS.deskTable.loaded) {
-      pctx.drawImage(ASSETS.deskTable.img, d.col * t, d.row * t, CONFIG.DESK_COLS * t, CONFIG.DESK_ROWS * t);
+      pctx.drawImage(ASSETS.deskTable.img, dx, dy, deskVisualW, deskVisualH);
     } else {
       pctx.fillStyle = COLORS.deskFallback;
-      pctx.fillRect(d.col * t, d.row * t, CONFIG.DESK_COLS * t, CONFIG.DESK_ROWS * t);
+      pctx.fillRect(dx, dy, deskVisualW, deskVisualH);
     }
   }
 
@@ -846,10 +896,15 @@ function startGame() {
 /* -----------------------------------------------------------------------------
    LOGIC LAYER: server placement.
 
-   Rules: interior tiles only, never within MIN_SERVER_GAP tiles of another
-   server, the player spawn, a desk, or a partition. Then a flood fill proves
-   every server has a reachable tile next to it (desks/partitions count as
-   blocked ground, same as v1's walls-only version did for servers alone).
+   Rules: interior tiles only, never within MIN_SERVER_GAP tiles (Chebyshev,
+   grid-cell-based) of the player spawn, a desk, or a partition. v8: on top
+   of that, a server's actual rendered sprite bounding box must also clear
+   every wall by SERVER_WALL_MARGIN px (bug fix 1) and clear every other
+   server's bounding box by SERVER_MIN_PIXEL_GAP px (bug fix 2) — see
+   getServerBBoxAt()/serverBBoxClearsWalls()/bboxesOverlap(), below. Then a
+   flood fill proves every server has a reachable tile next to it
+   (desks/partitions count as blocked ground, same as v1's walls-only version
+   did for servers alone).
 ----------------------------------------------------------------------------- */
 function placeServers(spawnTile) {
   for (let attempt = 0; attempt < 200; attempt++) {
@@ -872,14 +927,27 @@ function tryPlaceServers(spawnTile) {
 
       if (chebyshev(col, row, spawnTile.col, spawnTile.row) < CONFIG.MIN_SERVER_GAP) continue;
 
-      const tooCloseToServer = servers.some(
-        (s) => chebyshev(col, row, s.col, s.row) < CONFIG.MIN_SERVER_GAP
-      );
-      if (tooCloseToServer) continue;
-
       // v2: also keep clear of desks and partitions.
       if (nearAnyTile(col, row, activeMap.deskFootprintTiles, CONFIG.MIN_SERVER_GAP)) continue;
       if (nearAnyTile(col, row, activeMap.partitionTiles, CONFIG.MIN_SERVER_GAP)) continue;
+
+      // v8 bug fix 1: the tile-based checks above only guarantee the
+      // server's grid cell is clear — server_rack.png is drawn much taller
+      // than one tile (see getServerBBoxAt(), below), so a tile that passes
+      // the checks above can still render with the rack sprite poking into
+      // the wall row above it. Validate the server's actual rendered
+      // bounding box against all four walls instead of just its tile.
+      const bbox = getServerBBoxAt(col, row);
+      if (!serverBBoxClearsWalls(bbox)) continue;
+
+      // v8 bug fix 2: same idea between servers — two servers in
+      // "tile-adjacent-enough" cells could still have visually overlapping
+      // or touching rack sprites. Compare actual bounding boxes (with a
+      // small pixel buffer) instead of grid-cell distance.
+      const overlapsServer = servers.some((s) =>
+        bboxesOverlap(bbox, getServerBBoxAt(s.col, s.row), CONFIG.SERVER_MIN_PIXEL_GAP)
+      );
+      if (overlapsServer) continue;
 
       servers.push(makeServer(i, col, row));
       placed = true;
@@ -893,6 +961,48 @@ function tryPlaceServers(spawnTile) {
 
 function nearAnyTile(col, row, tiles, gap) {
   return tiles.some((t) => chebyshev(col, row, t.col, t.row) < gap);
+}
+
+// v8: a server's actual rendered bounding box if it were placed at (col,
+// row) — matches getServerVisualRect()'s math exactly (tall rack sprite,
+// bottom-anchored on the tile), so placement validation and drawing always
+// agree on where a server's edges really are. Used for bug fixes 1 & 2.
+function getServerBBoxAt(col, row) {
+  const x = tileCenter(col);
+  const y = tileCenter(row);
+  const w = CONFIG.SERVER_SPRITE_W;
+  const h = SERVER_SPRITE_H;
+  return {
+    left: x - w / 2,
+    right: x + w / 2,
+    top: y - h + CONFIG.SERVER_SIZE / 2,
+    bottom: y + CONFIG.SERVER_SIZE / 2,
+  };
+}
+
+// v8 bug fix 1: true only if the server's full sprite box stays inside the
+// playable interior (inside the border wall ring) with CONFIG.SERVER_WALL_
+// MARGIN px to spare on every side — including the top, which is where the
+// tall rack sprite actually extends furthest from its anchor tile.
+function serverBBoxClearsWalls(bbox) {
+  const margin = CONFIG.SERVER_WALL_MARGIN;
+  return (
+    bbox.left >= CONFIG.TILE + margin &&
+    bbox.right <= canvas.width - CONFIG.TILE - margin &&
+    bbox.top >= CONFIG.TILE + margin &&
+    bbox.bottom <= canvas.height - CONFIG.TILE - margin
+  );
+}
+
+// v8 bug fix 2: true if two sprite boxes are within `buffer` px of touching
+// or overlapping (an inflate-then-intersect test).
+function bboxesOverlap(a, b, buffer) {
+  return !(
+    a.right + buffer <= b.left ||
+    b.right + buffer <= a.left ||
+    a.bottom + buffer <= b.top ||
+    b.bottom + buffer <= a.top
+  );
 }
 
 function makeServer(id, col, row) {
@@ -1184,8 +1294,14 @@ function updateShantanuTimer(dt) {
     // v7: gated by the active level's shantanuEnabled flag instead of a
     // hardcoded score threshold.
     if (getCurrentLevel(game.score).shantanuEnabled) {
+      // v8 bug fix 3: explicit trace logging so the 10-point unlock and the
+      // timer arming that immediately follows it are both easy to confirm
+      // while testing, instead of having to infer them from Shantanu's
+      // first appearance 30s later.
+      console.log(`[Shantanu] score threshold crossed (score=${Math.floor(game.score)}) — Shantanu enabled.`);
       game.shantanuUnlocked = true;
       game.shantanuTimer = CONFIG.SHANTANU_INTERVAL; // first event is 30s from here
+      console.log(`[Shantanu] 30s recurring timer armed at elapsed=${game.elapsed.toFixed(1)}s.`);
     }
     return;
   }
@@ -1392,15 +1508,17 @@ function drawRoom() {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
-  // Walls: border + partitions, drawn as individual textured tiles.
+  // Walls: border + partitions, drawn as individual textured tiles. v8:
+  // drawn at WALL_VISUAL_SIZE (60% of the tile), centered in the tile via
+  // WALL_VISUAL_OFFSET, to match the shrunk collision boxes above.
   for (const t of activeMap.wallTiles) {
-    const x = t.col * CONFIG.TILE;
-    const y = t.row * CONFIG.TILE;
+    const x = t.col * CONFIG.TILE + WALL_VISUAL_OFFSET;
+    const y = t.row * CONFIG.TILE + WALL_VISUAL_OFFSET;
     if (ASSETS.wallTile.loaded) {
-      ctx.drawImage(ASSETS.wallTile.img, x, y, CONFIG.TILE, CONFIG.TILE);
+      ctx.drawImage(ASSETS.wallTile.img, x, y, WALL_VISUAL_SIZE, WALL_VISUAL_SIZE);
     } else {
       ctx.fillStyle = COLORS.bgMid;
-      ctx.fillRect(x, y, CONFIG.TILE, CONFIG.TILE);
+      ctx.fillRect(x, y, WALL_VISUAL_SIZE, WALL_VISUAL_SIZE);
     }
   }
 
@@ -1409,17 +1527,22 @@ function drawRoom() {
 
 function drawDesks() {
   for (const d of activeMap.deskTiles) {
-    const x = d.col * CONFIG.TILE;
-    const y = d.row * CONFIG.TILE;
+    // v8: drawn at DESK_VISUAL_SIZE (60% of the old footprint size),
+    // centered in that footprint via DESK_VISUAL_OFFSET, to match the
+    // shrunk collision box built in buildMapLayout().
+    const x = d.col * CONFIG.TILE + DESK_VISUAL_OFFSET.x;
+    const y = d.row * CONFIG.TILE + DESK_VISUAL_OFFSET.y;
+    const w = DESK_VISUAL_SIZE.w;
+    const h = DESK_VISUAL_SIZE.h;
 
     if (ASSETS.deskTable.loaded) {
-      ctx.drawImage(ASSETS.deskTable.img, x, y, DESK_PIXEL_SIZE.w, DESK_PIXEL_SIZE.h);
+      ctx.drawImage(ASSETS.deskTable.img, x, y, w, h);
     } else {
       ctx.fillStyle = COLORS.deskFallback;
-      ctx.fillRect(x, y, DESK_PIXEL_SIZE.w, DESK_PIXEL_SIZE.h);
+      ctx.fillRect(x, y, w, h);
       ctx.strokeStyle = COLORS.deskFallbackBorder;
       ctx.lineWidth = 2;
-      ctx.strokeRect(x + 1, y + 1, DESK_PIXEL_SIZE.w - 2, DESK_PIXEL_SIZE.h - 2);
+      ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
     }
   }
 }
