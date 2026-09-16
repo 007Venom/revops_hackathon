@@ -1,21 +1,21 @@
 /* =============================================================================
-   RevOps Firefighter — v8
+   RevOps Firefighter — v9
    =============================================================================
    v1 was logic-only rectangles. v2 added textures/menu/HUD/scoring. v3 added
    sprites/video/pause-menu (v3.1 map select, v4 balance + the Shantanu boss
    event, v4.1/v4.2 cleanup + a GIF menu background, v5 sprite/audio/HUD
-   polish, v6/v6 graphics+sound follow-ups, v7 progressive difficulty). v8 is
-   bug fixes + sizing only, no new features:
-     - servers now validate their full rendered sprite bounding box (not just
-       tile/grid distance) against the walls and against each other, with a
-       small pixel buffer, so racks can no longer visually poke into the top
-       wall or touch/overlap a neighboring rack
-     - explicit console logging around the Shantanu 10-point unlock and the
-       30s timer arming that follows it, for easy runtime verification
-       (the arming logic itself was already correct on inspection)
-     - desk_table.png and wall_tile.png are drawn at 60% of their old
-       on-screen size, centered in the tile(s) they occupy, with matching
-       (also shrunk) collision boxes
+   polish, v6/v6 graphics+sound follow-ups, v7 progressive difficulty, v8 bug
+   fixes + sizing). v9:
+     - the grid is ~30% bigger (COLS 20->26, ROWS 14->18, TILE unchanged at
+       40px) — this gives servers' actual rendered sprite boxes enough room
+       to satisfy v8's wall-clearance and server-overlap checks on every
+       map, including the two that previously failed 100% of the time and
+       placed zero servers. No map's desk/partition layout needed to change.
+     - the stats panel (beside the canvas) and controls panel (under it) now
+       derive their pixel size — and their internal font sizes/line spacing —
+       from the main canvas instead of fixed constants, so any future grid
+       resize keeps them proportional automatically (see BASE_CANVAS_W/H,
+       STATS_PANEL_SCALE, CONTROLS_PANEL_SCALE).
 
    Architecture is unchanged:
      - DATA LAYER      : CONFIG + LEVELS + the `game` state object.
@@ -26,8 +26,8 @@
                          one.
 
    Each version's additions are labelled "v2:" / "v3:" / "v3.1:" / "v4:" /
-   "v5:" / "v7:" / "v8:" in comments so the diff against the previous version
-   is easy to follow.
+   "v5:" / "v7:" / "v8:" / "v9:" in comments so the diff against the previous
+   version is easy to follow.
 ============================================================================= */
 
 
@@ -36,9 +36,14 @@
 ----------------------------------------------------------------------------- */
 const CONFIG = {
   // --- Map geometry ---------------------------------------------------------
+  // v9: grid grown ~30% (20->26 cols, 14->18 rows) so servers' actual
+  // rendered sprite boxes have enough room to clear the walls and each
+  // other (see SERVER_WALL_MARGIN/SERVER_MIN_PIXEL_GAP below) without
+  // touching any individual map's desk/partition layout — verified by
+  // simulation to place all 10 servers on every map, 100% of the time.
   TILE: 40,               // pixel size of one grid tile
-  COLS: 20,               // grid width in tiles  (20 * 40 = 800px canvas)
-  ROWS: 14,               // grid height in tiles (14 * 40 = 560px canvas)
+  COLS: 26,               // grid width in tiles  (26 * 40 = 1040px canvas)
+  ROWS: 18,               // grid height in tiles (18 * 40 = 720px canvas)
 
   // --- Servers --------------------------------------------------------------
   SERVER_COUNT: 10,       // how many servers are placed at game start
@@ -231,18 +236,30 @@ const ctx = canvas.getContext('2d');
 canvas.width = CONFIG.COLS * CONFIG.TILE;
 canvas.height = CONFIG.ROWS * CONFIG.TILE;
 
+// v9: both side panels now scale WITH the main canvas instead of using
+// fixed pixel sizes, so resizing the grid (CONFIG.COLS/ROWS, like the 30%
+// expansion above) keeps them proportional automatically — no separate
+// constant to remember to update by hand next time. BASE_CANVAS_W/H is the
+// canvas size everything else here (HUD_PANEL_SCALE, CONTROLS_PANEL_W/H,
+// and the font sizes/line spacing inside drawSideStatsPanel()/
+// drawControlsPanel()) was originally tuned at.
+const BASE_CANVAS_W = 800;
+const BASE_CANVAS_H = 560;
+const STATS_PANEL_SCALE = canvas.height / BASE_CANVAS_H;   // sits beside the canvas -> tracks its height
+const CONTROLS_PANEL_SCALE = canvas.width / BASE_CANVAS_W; // sits under the canvas -> tracks its width
+
 // v5: stats panel (beside the canvas) and controls panel (under it) are
 // their own small canvases now, instead of being drawn on top of `canvas`
 // itself — see drawSideStatsPanel()/drawControlsPanel() further down.
 const statsCanvas = document.getElementById('statsCanvas');
 const statsCtx = statsCanvas.getContext('2d');
-statsCanvas.width = Math.round(288 * CONFIG.HUD_PANEL_SCALE);
-statsCanvas.height = Math.round(160 * CONFIG.HUD_PANEL_SCALE);
+statsCanvas.width = Math.round(288 * CONFIG.HUD_PANEL_SCALE * STATS_PANEL_SCALE);
+statsCanvas.height = Math.round(160 * CONFIG.HUD_PANEL_SCALE * STATS_PANEL_SCALE);
 
 const controlsCanvas = document.getElementById('controlsCanvas');
 const controlsCtx = controlsCanvas.getContext('2d');
-controlsCanvas.width = CONFIG.CONTROLS_PANEL_W;
-controlsCanvas.height = CONFIG.CONTROLS_PANEL_H;
+controlsCanvas.width = Math.round(CONFIG.CONTROLS_PANEL_W * CONTROLS_PANEL_SCALE);
+controlsCanvas.height = Math.round(CONFIG.CONTROLS_PANEL_H * CONTROLS_PANEL_SCALE);
 
 const HUD_FONT = `"Press Start 2P", "Courier New", monospace`;
 
@@ -296,6 +313,18 @@ for (const [key, src] of Object.entries(ASSET_SOURCES)) {
    rules) is unchanged. The player picks one from the map-select overlay
    (shown after "Start Game", wired further down) before each new game.
 ----------------------------------------------------------------------------- */
+// v9: every tile below is the original (pre-v9) layout shifted by
+// (+3 cols, +2 rows) — exactly how much CONFIG.COLS/ROWS grew on each side
+// (26-20=6, half=3; 18-14=4, half=2). The border wall already auto-expands
+// to the new edges on its own (see buildMapLayout()), but these fixed desk/
+// partition coordinates don't — without this shift every map's furniture
+// would still sit where it was in the old 20x14 room, i.e. pinned to the
+// new room's top-left corner with a large, uneven gap of new floor opening
+// up only on the right/bottom. Shifting by the same amount the grid grew
+// re-centers each map's layout with an even margin on all four sides
+// instead, with zero change to spacing between desks or partitions (a pure
+// translation) and zero change to their size (DESK_VISUAL_SCALE/
+// WALL_VISUAL_SCALE are untouched).
 const MAPS = [
   {
     id: 'open-floor',
@@ -303,12 +332,12 @@ const MAPS = [
     difficulty: 'Easy',
     tagline: 'Four corner desks and two short partition walls around a mostly open center.',
     deskTiles: [
-      { col: 2, row: 2 }, { col: 15, row: 2 },
-      { col: 2, row: 10 }, { col: 15, row: 10 },
+      { col: 5, row: 4 }, { col: 18, row: 4 },
+      { col: 5, row: 12 }, { col: 18, row: 12 },
     ],
     partitionTiles: [
-      { col: 10, row: 3 }, { col: 10, row: 4 },
-      { col: 9, row: 9 }, { col: 9, row: 10 },
+      { col: 13, row: 5 }, { col: 13, row: 6 },
+      { col: 12, row: 11 }, { col: 12, row: 12 },
     ],
   },
   {
@@ -317,12 +346,12 @@ const MAPS = [
     difficulty: 'Medium',
     tagline: 'Two long desk rows split the floor into lanes — plan a loop instead of cutting straight across.',
     deskTiles: [
-      { col: 2, row: 4 }, { col: 7, row: 4 }, { col: 12, row: 4 },
-      { col: 2, row: 8 }, { col: 7, row: 8 }, { col: 12, row: 8 },
+      { col: 5, row: 6 }, { col: 10, row: 6 }, { col: 15, row: 6 },
+      { col: 5, row: 10 }, { col: 10, row: 10 }, { col: 15, row: 10 },
     ],
     partitionTiles: [
-      { col: 16, row: 4 }, { col: 16, row: 5 },
-      { col: 16, row: 8 }, { col: 16, row: 9 },
+      { col: 19, row: 6 }, { col: 19, row: 7 },
+      { col: 19, row: 10 }, { col: 19, row: 11 },
     ],
   },
   {
@@ -331,18 +360,18 @@ const MAPS = [
     difficulty: 'Medium',
     tagline: 'Desks and partitions form a loose ring around the center — commit to one of four gaps to get in or out.',
     deskTiles: [
-      { col: 6, row: 3 }, { col: 12, row: 3 },
-      { col: 6, row: 9 }, { col: 12, row: 9 },
+      { col: 9, row: 5 }, { col: 15, row: 5 },
+      { col: 9, row: 11 }, { col: 15, row: 11 },
     ],
     // Shorter ring segments than the original design (2 tiles per side
     // instead of 4) — with the 4 corner desks already blocking ~24 tiles,
     // a full 16-tile ring left too little open floor for placeServers() to
     // reliably find a valid, fully-reachable spot for all 10 servers.
     partitionTiles: [
-      { col: 5, row: 6 }, { col: 5, row: 7 },
-      { col: 14, row: 6 }, { col: 14, row: 7 },
-      { col: 9, row: 2 }, { col: 10, row: 2 },
-      { col: 9, row: 11 }, { col: 10, row: 11 },
+      { col: 8, row: 8 }, { col: 8, row: 9 },
+      { col: 17, row: 8 }, { col: 17, row: 9 },
+      { col: 12, row: 4 }, { col: 13, row: 4 },
+      { col: 12, row: 13 }, { col: 13, row: 13 },
     ],
   },
   {
@@ -351,14 +380,14 @@ const MAPS = [
     difficulty: 'Hard',
     tagline: 'Nine staggered desk pods with partition stubs at every gap — narrow corridors, hard choices under fire.',
     deskTiles: [
-      { col: 2, row: 2 }, { col: 8, row: 2 }, { col: 14, row: 2 },
-      { col: 2, row: 6 }, { col: 7, row: 6 }, { col: 14, row: 6 },
-      { col: 2, row: 10 }, { col: 8, row: 10 }, { col: 14, row: 10 },
+      { col: 5, row: 4 }, { col: 11, row: 4 }, { col: 17, row: 4 },
+      { col: 5, row: 8 }, { col: 10, row: 8 }, { col: 17, row: 8 },
+      { col: 5, row: 12 }, { col: 11, row: 12 }, { col: 17, row: 12 },
     ],
     partitionTiles: [
-      { col: 5, row: 4 }, { col: 5, row: 8 },
-      { col: 11, row: 4 }, { col: 11, row: 8 },
-      { col: 17, row: 4 }, { col: 17, row: 8 },
+      { col: 8, row: 6 }, { col: 8, row: 10 },
+      { col: 14, row: 6 }, { col: 14, row: 10 },
+      { col: 20, row: 6 }, { col: 20, row: 10 },
     ],
   },
 ];
@@ -1829,12 +1858,17 @@ function drawSideStatsPanel() {
 
   statsCtx.textAlign = 'center';
 
+  // v9: font sizes + line spacing scale with the panel itself (see
+  // STATS_PANEL_SCALE above) so text stays the same proportion of the frame
+  // regardless of how big the frame is drawn.
+  const s = STATS_PANEL_SCALE;
+
   if (!game) {
     // No run started yet — a friendly placeholder instead of all-zero stats.
     statsCtx.fillStyle = COLORS.grey;
-    statsCtx.font = `10px ${HUD_FONT}`;
-    statsCtx.fillText('START A GAME', w / 2, h / 2 - 8);
-    statsCtx.fillText('TO SEE STATS', w / 2, h / 2 + 14);
+    statsCtx.font = `${10 * s}px ${HUD_FONT}`;
+    statsCtx.fillText('START A GAME', w / 2, h / 2 - 8 * s);
+    statsCtx.fillText('TO SEE STATS', w / 2, h / 2 + 14 * s);
     return;
   }
 
@@ -1848,19 +1882,20 @@ function drawSideStatsPanel() {
   ];
 
   statsCtx.fillStyle = COLORS.cream;
-  statsCtx.font = `13px ${HUD_FONT}`;
-  const startY = h / 2 - ((lines.length - 1) / 2) * 24;
-  lines.forEach((line, i) => statsCtx.fillText(line, w / 2, startY + i * 24));
+  statsCtx.font = `${13 * s}px ${HUD_FONT}`;
+  const lineHeight = 24 * s;
+  const startY = h / 2 - ((lines.length - 1) / 2) * lineHeight;
+  lines.forEach((line, i) => statsCtx.fillText(line, w / 2, startY + i * lineHeight));
 
   // Small secondary debug line so the fire ramp/extinguish timing are still
   // visible while tuning CONFIG — now just the last line in the same panel
   // instead of floating below the old in-canvas box.
   statsCtx.fillStyle = COLORS.grey;
-  statsCtx.font = '11px monospace';
+  statsCtx.font = `${11 * s}px monospace`;
   statsCtx.fillText(
     `ignite every ${getCurrentLevel(game.score).fireInterval.toFixed(1)}s (next in ${Math.max(0, game.igniteTimer).toFixed(1)}s)`,
     w / 2,
-    startY + lines.length * 24 + 6
+    startY + lines.length * lineHeight + 6 * s
   );
 }
 
@@ -1894,14 +1929,19 @@ function drawControlsPanel() {
 
   controlsCtx.textAlign = 'center';
 
+  // v9: same idea as drawSideStatsPanel() — font sizes + vertical positions
+  // scale with the panel via CONTROLS_PANEL_SCALE, above.
+  const s = CONTROLS_PANEL_SCALE;
+
   controlsCtx.fillStyle = COLORS.accent;
-  controlsCtx.font = `13px ${HUD_FONT}`;
-  controlsCtx.fillText('HOW TO PLAY', w / 2, 34);
+  controlsCtx.font = `${13 * s}px ${HUD_FONT}`;
+  controlsCtx.fillText('HOW TO PLAY', w / 2, 34 * s);
 
   controlsCtx.fillStyle = COLORS.cream;
-  controlsCtx.font = '13px monospace';
-  const startY = 66;
-  CONTROLS_LINES.forEach((line, i) => controlsCtx.fillText(line, w / 2, startY + i * 22));
+  controlsCtx.font = `${13 * s}px monospace`;
+  const startY = 66 * s;
+  const lineHeight = 22 * s;
+  CONTROLS_LINES.forEach((line, i) => controlsCtx.fillText(line, w / 2, startY + i * lineHeight));
 }
 
 // --- v2: burn scoreboard / danger meter --------------------------------------

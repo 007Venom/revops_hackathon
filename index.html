@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="robots" content="noindex, nofollow">
-  <title>RevOps Firefighter — v8</title>
+  <title>RevOps Firefighter — v9</title>
 
   <!-- Pixel-style display font for the in-game HUD. Google Fonts, loaded via
        CDN link tag per project rules (Section 9) — no build step involved.
@@ -14,11 +14,11 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
 
-  <link rel="stylesheet" href="style.css?v=009">
+  <link rel="stylesheet" href="style.css?v=010">
 </head>
 <body>
   <!-- CLIENT/UI LAYER -->
-  <h1>RevOps Firefighter <span class="version">v8</span></h1>
+  <h1>RevOps Firefighter <span class="version">v9</span></h1>
 
   <!-- v5: game canvas + stats panel now sit side by side; the controls
        panel sits under the canvas. Both new panels are their own small
@@ -28,7 +28,10 @@
   <div class="game-layout">
     <div class="game-column">
       <div class="game-wrap">
-        <canvas id="game" width="800" height="560"></canvas>
+        <!-- v9: 1040x720 (was 800x560) — see CONFIG.COLS/ROWS in game.js,
+             which is what actually drives this; these attributes are just
+             set to match so there's no flash-of-wrong-size before JS runs. -->
+        <canvas id="game" width="1040" height="720"></canvas>
 
         <!-- Main menu overlay. Pure HTML/CSS on top of the canvas — shown
              before the first game starts, and again if the player Quits
@@ -105,12 +108,17 @@
 
       <!-- v5: controls / how-to-play reference card, directly under the
            canvas. Static content — drawn by drawControlsPanel() in game.js. -->
-      <canvas id="controlsCanvas" class="hud-canvas" width="480" height="267"></canvas>
+      <!-- v9: sized to CONFIG.CONTROLS_PANEL_W/H * CONTROLS_PANEL_SCALE
+           (game.js) — matches the canvas's new width, same reasoning as
+           the main canvas above. -->
+      <canvas id="controlsCanvas" class="hud-canvas" width="624" height="347"></canvas>
     </div>
 
     <!-- v5: stats panel, moved out of the game canvas entirely and drawn on
-         its own canvas beside it — see drawSideStatsPanel() in game.js. -->
-    <canvas id="statsCanvas" class="hud-canvas" width="360" height="200"></canvas>
+         its own canvas beside it — see drawSideStatsPanel() in game.js.
+         v9: sized to 288/160 * CONFIG.HUD_PANEL_SCALE * STATS_PANEL_SCALE
+         (game.js) — matches the canvas's new height. -->
+    <canvas id="statsCanvas" class="hud-canvas" width="463" height="257"></canvas>
   </div>
 
   <!-- v5: gameplay music + Shantanu's one-shot alarm. No visible controls —
@@ -120,6 +128,6 @@
   <audio id="shantanuAlarm" src="assets/audio/shantanu_alarm.mp3"></audio>
 
   <!-- LOGIC LAYER -->
-  <script src="game.js?v=010"></script>
+  <script src="game.js?v=011"></script>
 </body>
 </html>
