@@ -1,12 +1,14 @@
 /* =============================================================================
-   RevOps Firefighter — v3
+   RevOps Firefighter — v4
    =============================================================================
-   v1 was logic-only rectangles. v2 added textures/menu/HUD/scoring. v3 adds,
-   on top of both:
-     - real sprites: server rack (with a burned/charred filter), an animated
-       fire overlay on burning servers, and a 4-direction player walk cycle
-     - a looping background video on the main menu (muted autoplay)
-     - an Escape pause menu with Continue / Quit-to-menu + a random taunt line
+   v1 was logic-only rectangles. v2 added textures/menu/HUD/scoring. v3 added
+   sprites/video/pause-menu (and v3.1 added map select). v4 adds:
+     - a less punishing burn-down timer (8s -> 16s)
+     - a simpler scoring rule: +1 per extinguish, no other modifiers
+     - a "Shantanu" boss event: once score >= 10, every 30s he walks in from
+       a random edge, drops a speech-bubble one-liner, force-ignites a
+       random OK server, and walks back out — modeled as its own small state
+       machine alongside the fire/extinguish one
 
    Architecture is unchanged:
      - DATA LAYER      : CONFIG + the `game` state object.
@@ -14,8 +16,8 @@
      - CLIENT/UI LAYER : draw() + the DOM menu/pause overlays in
                          index.html/style.css.
 
-   Each version's additions are labelled "v2:" / "v3:" in comments so the
-   diff against the previous version is easy to follow.
+   Each version's additions are labelled "v2:" / "v3:" / "v3.1:" / "v4:" in
+   comments so the diff against the previous version is easy to follow.
 ============================================================================= */
 
 
@@ -47,7 +49,9 @@ const CONFIG = {
                                // second of elapsed time (escalating pressure)
   IGNITE_FIRST_DELAY: 2.0,     // grace period before the very first fire
 
-  BURN_DOWN_TIME: 8.0,         // a fire left this long destroys the server
+  // v4: was 8.0s — doubled so there's a fairer window to reach a fire
+  // before it's lost for good.
+  BURN_DOWN_TIME: 16.0,        // a fire left this long destroys the server
 
   // --- Extinguishing --------------------------------------------------------
   EXTINGUISH_TIME: 2.0,   // seconds of holding SPACE to put a fire out
@@ -65,11 +69,10 @@ const CONFIG = {
   DESK_COLS: 3,
   DESK_ROWS: 2,
 
-  // --- v2: scoring ------------------------------------------------------------
+  // --- v4: scoring (replaces the v2 formula) -----------------------------------
+  // Deliberately just one rule now: no time bonus, no burn-down penalty.
   POINTS: {
-    EXTINGUISH: 100,      // per server successfully put out
-    BURN_PENALTY: 150,    // per server lost to BURNED_DOWN
-    SURVIVE_PER_SEC: 1,   // slow trickle just for staying alive
+    EXTINGUISH: 1,        // per server successfully put out — the only rule
   },
   LEADERBOARD_SIZE: 5,    // top N scores kept for this browser session
 
@@ -92,6 +95,15 @@ const CONFIG = {
   PLAYER_FRAME_COUNT: 4,
   WALK_ANIM_FPS: 8,
   PLAYER_SPRITE_W: 40,       // drawn width of the character sprite
+
+  // --- v4: Shantanu boss event --------------------------------------------------
+  SHANTANU_SCORE_THRESHOLD: 10,  // score needed to arm the repeating timer
+  SHANTANU_INTERVAL: 30,         // seconds (game-time; frozen while paused)
+  SHANTANU_WALK_SPEED: 150,      // pixels per second
+  SHANTANU_ENTRY_DEPTH_TILES: 3, // how far in from the wall he stops to talk
+  SHANTANU_BUBBLE_DURATION: 2.0, // seconds the speech bubble stays up
+  SHANTANU_BUBBLE_TEXT: 'I have BAD SHANTANEWS for you!',
+  SHANTANU_SPRITE_W: 46,         // a bit bigger than the player — reads as a boss
 
   // --- v3: pause menu taunts ---------------------------------------------------
   // Exact wording as given — do not edit these strings.
@@ -181,6 +193,9 @@ const ASSET_SOURCES = {
   serverRack: 'assets/sprites/server_rack.png',
   fireSheet: 'assets/sprites/fire_spritesheet.png',
   walkingSprite: 'assets/sprites/walking_sprite.png',
+
+  // v4
+  shantanuSprite: 'assets/sprites/shantanu_sprite.png',
 };
 
 const ASSETS = {};
@@ -361,6 +376,17 @@ const FIRE_DRAW_SIZE = {
 // 236 x 283.25. Drawn scaled down to PLAYER_SPRITE_W wide, same aspect ratio.
 const PLAYER_CELL = { w: 944 / 4, h: 1133 / 4 };
 const PLAYER_SPRITE_H = Math.round(CONFIG.PLAYER_SPRITE_W * (PLAYER_CELL.h / PLAYER_CELL.w));
+
+// v4: shantanu_sprite.png is the same 944x1133, 4x4-grid sheet convention as
+// walking_sprite.png, so it reuses PLAYER_CELL's slicing geometry and
+// CONFIG.DIRECTION_ROWS — only the drawn size differs.
+const SHANTANU_SPRITE_H = Math.round(CONFIG.SHANTANU_SPRITE_W * (PLAYER_CELL.h / PLAYER_CELL.w));
+
+// Which way Shantanu faces while walking straight in from / back out to each
+// map edge (his in/out legs are a straight perpendicular line, so this is
+// fixed per edge rather than computed from a direction vector each frame).
+const EDGE_FACING_IN = { top: 'down', bottom: 'up', left: 'right', right: 'left' };
+const EDGE_FACING_OUT = { top: 'up', bottom: 'down', left: 'left', right: 'right' };
 
 
 /* -----------------------------------------------------------------------------
@@ -637,6 +663,23 @@ function startGame() {
 
     // v2: running score for this session's game.
     score: 0,
+
+    // v4: Shantanu boss event — see updateShantanuTimer()/updateShantanuActor().
+    shantanuUnlocked: false,
+    shantanuTimer: 0,
+    shantanu: {
+      state: 'IDLE', // IDLE -> ENTERING -> TALKING -> WALKING_TO_TARGET -> IGNITING -> LEAVING -> (back to IDLE)
+      x: 0,
+      y: 0,
+      facing: 'down',
+      moving: false,
+      walkClock: 0,
+      edge: null,
+      entryPoint: null,
+      stopPoint: null,
+      targetServerId: null,
+      bubbleTimer: 0,
+    },
   };
 }
 
@@ -752,12 +795,13 @@ function update(dt) {
   if (!game || game.phase !== PHASE.PLAYING || game.paused) return;
 
   game.elapsed += dt;
-  game.score += CONFIG.POINTS.SURVIVE_PER_SEC * dt; // v2: trickle for staying alive
 
   updatePlayer(dt);
   updateIgnition(dt);
   updateFires(dt);
   updateExtinguishing(dt);
+  updateShantanuTimer(dt);   // v4
+  updateShantanuActor(dt);   // v4
   checkEndConditions();
 }
 
@@ -835,8 +879,8 @@ function updateFires(dt) {
       s.state = STATE.BURNED_DOWN;
       s.burnTimer = 0;
 
-      // v2: penalty for losing a server (never let the score go negative).
-      game.score = Math.max(0, game.score - CONFIG.POINTS.BURN_PENALTY);
+      // v4: no score penalty for a burn-down anymore — scoring is just
+      // +1 per successful extinguish (see updateExtinguishing below).
 
       if (game.extinguish.targetId === s.id) resetExtinguish();
     }
@@ -894,6 +938,200 @@ function distanceToServerEdge(player, server) {
   return Math.max(0, Math.hypot(Math.max(0, gapX), Math.max(0, gapY)));
 }
 
+// --- v4: Shantanu boss event --------------------------------------------------
+// Small state machine, updated every frame like the fires are: a trigger
+// timer (updateShantanuTimer) that arms once score >= threshold and then
+// fires every SHANTANU_INTERVAL seconds, and an actor step
+// (updateShantanuActor) that drives whichever state he's currently in.
+// Both are called from update(), so both are naturally frozen along with
+// everything else while the game is paused.
+
+// Picks a random edge + a random point along it, and works out the
+// straight-line stop point a few tiles in from that edge.
+function pickShantanuSpawn() {
+  const edges = ['top', 'bottom', 'left', 'right'];
+  const edge = edges[Math.floor(Math.random() * edges.length)];
+
+  // Keep the along-edge spawn point away from the corners.
+  const margin = CONFIG.TILE * 1.5;
+  const axisLength = (edge === 'top' || edge === 'bottom') ? canvas.width : canvas.height;
+  const along = margin + Math.random() * (axisLength - margin * 2);
+
+  const depthPx = CONFIG.SHANTANU_ENTRY_DEPTH_TILES * CONFIG.TILE;
+  let entryPoint, stopPoint;
+
+  if (edge === 'top') {
+    entryPoint = { x: along, y: -SHANTANU_SPRITE_H };
+    stopPoint = { x: along, y: CONFIG.TILE + depthPx };
+  } else if (edge === 'bottom') {
+    entryPoint = { x: along, y: canvas.height + SHANTANU_SPRITE_H };
+    stopPoint = { x: along, y: canvas.height - CONFIG.TILE - depthPx };
+  } else if (edge === 'left') {
+    entryPoint = { x: -SHANTANU_SPRITE_W, y: along };
+    stopPoint = { x: CONFIG.TILE + depthPx, y: along };
+  } else {
+    entryPoint = { x: canvas.width + SHANTANU_SPRITE_W, y: along };
+    stopPoint = { x: canvas.width - CONFIG.TILE - depthPx, y: along };
+  }
+
+  return { edge, entryPoint, stopPoint };
+}
+
+// Arms once score crosses the threshold, then re-fires every
+// SHANTANU_INTERVAL seconds for the rest of the run (no re-crossing needed).
+function updateShantanuTimer(dt) {
+  if (!game.shantanuUnlocked) {
+    if (game.score >= CONFIG.SHANTANU_SCORE_THRESHOLD) {
+      game.shantanuUnlocked = true;
+      game.shantanuTimer = CONFIG.SHANTANU_INTERVAL; // first event is 30s from here
+    }
+    return;
+  }
+
+  game.shantanuTimer -= dt;
+  if (game.shantanuTimer > 0) return;
+  game.shantanuTimer += CONFIG.SHANTANU_INTERVAL; // keeps cadence even if a tick overshoots
+
+  // Only one Shantanu at a time — if a prior sequence is still running,
+  // this tick is skipped entirely (per spec).
+  if (game.shantanu.state !== 'IDLE') return;
+
+  const okServers = game.servers.filter((s) => s.state === STATE.OK);
+  if (okServers.length === 0) return; // nothing to ignite — wait for the next tick
+
+  const spawn = pickShantanuSpawn();
+  const s = game.shantanu;
+  s.state = 'ENTERING';
+  s.edge = spawn.edge;
+  s.entryPoint = spawn.entryPoint;
+  s.stopPoint = spawn.stopPoint;
+  s.x = spawn.entryPoint.x;
+  s.y = spawn.entryPoint.y;
+  s.facing = EDGE_FACING_IN[spawn.edge];
+  s.moving = true;
+  s.walkClock = 0;
+  s.targetServerId = null;
+
+  console.log(`[Shantanu] incoming from the ${spawn.edge} edge.`);
+}
+
+// Moves (x, y) toward (targetX, targetY) by at most maxDist, snapping
+// exactly onto the target instead of overshooting past it.
+function stepToward(x, y, targetX, targetY, maxDist) {
+  const dx = targetX - x, dy = targetY - y;
+  const dist = Math.hypot(dx, dy);
+  if (dist <= maxDist || dist === 0) return { x: targetX, y: targetY, arrived: true, dx, dy };
+  const ratio = maxDist / dist;
+  return { x: x + dx * ratio, y: y + dy * ratio, arrived: false, dx, dy };
+}
+
+// Same "vertical wins on a tie" convention as the player's own facing logic.
+function facingFromDelta(dx, dy, fallback) {
+  if (Math.abs(dy) > 0.01 && Math.abs(dy) >= Math.abs(dx)) return dy < 0 ? 'up' : 'down';
+  if (Math.abs(dx) > 0.01) return dx < 0 ? 'left' : 'right';
+  return fallback;
+}
+
+function updateShantanuActor(dt) {
+  const s = game.shantanu;
+  if (s.state === 'IDLE') return;
+
+  const step = CONFIG.SHANTANU_WALK_SPEED * dt;
+
+  switch (s.state) {
+    case 'ENTERING': {
+      const move = stepToward(s.x, s.y, s.stopPoint.x, s.stopPoint.y, step);
+      s.x = move.x;
+      s.y = move.y;
+      s.moving = true;
+      s.walkClock += dt;
+      if (move.arrived) {
+        s.state = 'TALKING';
+        s.moving = false;
+        s.walkClock = 0;
+        s.bubbleTimer = CONFIG.SHANTANU_BUBBLE_DURATION;
+      }
+      break;
+    }
+
+    case 'TALKING': {
+      // Only his own movement freezes here — the player and every other
+      // fire keep updating normally in the background (see update()).
+      s.bubbleTimer -= dt;
+      if (s.bubbleTimer > 0) break;
+
+      const okServers = game.servers.filter((sv) => sv.state === STATE.OK);
+      if (okServers.length === 0) {
+        // Everything still OK at trigger time got extinguished/ignited by
+        // something else while he was walking in/talking — bail gracefully.
+        s.state = 'LEAVING';
+        s.facing = EDGE_FACING_OUT[s.edge];
+        s.moving = true;
+        s.walkClock = 0;
+        break;
+      }
+
+      const target = okServers[Math.floor(Math.random() * okServers.length)];
+      s.targetServerId = target.id;
+      s.state = 'WALKING_TO_TARGET';
+      s.moving = true;
+      s.walkClock = 0;
+      break;
+    }
+
+    case 'WALKING_TO_TARGET': {
+      const target = game.servers.find((sv) => sv.id === s.targetServerId);
+      if (!target) { // shouldn't happen, but never get stuck if it does
+        s.state = 'LEAVING';
+        s.facing = EDGE_FACING_OUT[s.edge];
+        break;
+      }
+      const move = stepToward(s.x, s.y, target.x, target.y, step);
+      s.facing = facingFromDelta(move.dx, move.dy, s.facing);
+      s.x = move.x;
+      s.y = move.y;
+      s.moving = true;
+      s.walkClock += dt;
+      if (move.arrived) s.state = 'IGNITING';
+      break;
+    }
+
+    case 'IGNITING': {
+      // One-frame state: force the target BURNING (bypassing normal random
+      // ignition), then head for the exit. From here it's an ordinary fire —
+      // same animation, burn-down timer and extinguishing rules as any other.
+      const target = game.servers.find((sv) => sv.id === s.targetServerId);
+      if (target) {
+        target.state = STATE.BURNING;
+        target.burnTimer = 0;
+        console.log(`[Shantanu] forced server #${target.id} into BURNING.`);
+      }
+      s.state = 'LEAVING';
+      s.facing = EDGE_FACING_OUT[s.edge];
+      s.moving = true;
+      s.walkClock = 0;
+      break;
+    }
+
+    case 'LEAVING': {
+      const move = stepToward(s.x, s.y, s.entryPoint.x, s.entryPoint.y, step);
+      s.x = move.x;
+      s.y = move.y;
+      s.moving = true;
+      s.walkClock += dt;
+      if (move.arrived) {
+        // DONE is folded into this transition — once he's back off-map
+        // there's nothing left to do but wait for the next timer tick.
+        s.state = 'IDLE';
+        s.moving = false;
+        s.walkClock = 0;
+        s.targetServerId = null;
+      }
+      break;
+    }
+  }
+}
+
 // --- Win / lose -------------------------------------------------------------
 function checkEndConditions() {
   const burnedDown = countByState(STATE.BURNED_DOWN);
@@ -931,6 +1169,7 @@ function draw() {
   drawRoom();
   drawServers();
   drawPlayer();
+  drawShantanu();         // v4: only draws once he's actually active
   drawExtinguishBar();
   drawStatsPanel();       // v2: replaces the old plain debug text
   drawBurnScoreboard();   // v2: separate "X/3 SERVERS LOST" danger meter
@@ -1105,6 +1344,90 @@ function drawPlayer() {
     ctx.fillStyle = COLORS.player;
     ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
   }
+}
+
+// v4: Shantanu himself, plus his speech bubble while TALKING. His x/y is
+// used directly as the sprite's center (he has no separate ground hitbox
+// the way the player does, since he never collides with anything).
+function drawShantanu() {
+  const s = game.shantanu;
+  if (s.state === 'IDLE') return;
+
+  const w = CONFIG.SHANTANU_SPRITE_W;
+  const h = SHANTANU_SPRITE_H;
+  const drawX = s.x - w / 2;
+  const drawY = s.y - h / 2;
+
+  if (ASSETS.shantanuSprite.loaded) {
+    const row = CONFIG.DIRECTION_ROWS[s.facing];
+    const frame = s.moving
+      ? Math.floor(s.walkClock * CONFIG.WALK_ANIM_FPS) % CONFIG.PLAYER_FRAME_COUNT
+      : 0;
+    ctx.drawImage(
+      ASSETS.shantanuSprite.img,
+      frame * PLAYER_CELL.w, row * PLAYER_CELL.h, PLAYER_CELL.w, PLAYER_CELL.h,
+      drawX, drawY, w, h
+    );
+  } else {
+    // Fallback: a distinct colored square so he's still clearly a separate
+    // "boss" entity rather than another player.
+    ctx.fillStyle = '#6a2fb8';
+    ctx.fillRect(drawX, drawY, w, h);
+    ctx.fillStyle = COLORS.cream;
+    ctx.font = 'bold 12px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('S', s.x, s.y + 4);
+  }
+
+  if (s.state === 'TALKING') drawSpeechBubble(s.x, drawY, CONFIG.SHANTANU_BUBBLE_TEXT);
+
+  // Debug label so the trigger/event timing is easy to verify while testing.
+  ctx.fillStyle = COLORS.grey;
+  ctx.font = '9px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(`SHANTANU: ${s.state}`, s.x, drawY + h + 12);
+}
+
+// Simple comic-style speech bubble: rounded rect + a small pointer triangle
+// aimed at Shantanu's head. Plain canvas shapes, no extra assets needed.
+function drawSpeechBubble(anchorX, anchorTopY, text) {
+  ctx.font = 'bold 11px monospace';
+  const paddingX = 10;
+  const textWidth = ctx.measureText(text).width;
+  const bubbleW = textWidth + paddingX * 2;
+  const bubbleH = 26;
+  const bubbleX = clamp(anchorX - bubbleW / 2, 6, canvas.width - bubbleW - 6);
+  const bubbleY = anchorTopY - bubbleH - 14; // gap for the pointer
+
+  ctx.fillStyle = COLORS.cream;
+  ctx.strokeStyle = COLORS.accentDark;
+  ctx.lineWidth = 2;
+  roundRectPath(bubbleX, bubbleY, bubbleW, bubbleH, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  const pointerX = clamp(anchorX, bubbleX + 14, bubbleX + bubbleW - 14);
+  ctx.beginPath();
+  ctx.moveTo(pointerX - 7, bubbleY + bubbleH - 1);
+  ctx.lineTo(pointerX + 7, bubbleY + bubbleH - 1);
+  ctx.lineTo(pointerX, bubbleY + bubbleH + 10);
+  ctx.closePath();
+  ctx.fillStyle = COLORS.cream;
+  ctx.fill();
+
+  ctx.fillStyle = '#1a1a1a';
+  ctx.textAlign = 'center';
+  ctx.fillText(text, bubbleX + bubbleW / 2, bubbleY + bubbleH / 2 + 4);
+}
+
+function roundRectPath(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
 }
 
 function drawExtinguishBar() {
